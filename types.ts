@@ -39,4 +39,6 @@ export interface UsageLog {
   type: ProductType;
   liters: string;
   timestamp: number;
+  action: 'CONSUMO' | 'INGRESO' | 'EDICION';
+  quantity: number;
 }

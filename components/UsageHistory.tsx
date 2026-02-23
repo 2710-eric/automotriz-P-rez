@@ -1,5 +1,6 @@
 
 import React from 'react';
+import { History } from 'lucide-react';
 import { UsageLog } from '../types';
 
 interface UsageHistoryProps {
@@ -8,53 +9,65 @@ interface UsageHistoryProps {
 
 const UsageHistory: React.FC<UsageHistoryProps> = ({ logs }) => {
   return (
-    <div className="bg-[#1E293B] rounded-3xl border border-slate-700 shadow-xl overflow-hidden">
-      <div className="p-8 border-b border-slate-700 flex items-center justify-between bg-slate-800/20">
+    <div className="bg-white rounded-[2rem] border border-slate-200 shadow-sm overflow-hidden">
+      <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
         <div>
-          <h3 className="font-black text-slate-100 uppercase tracking-tighter text-lg italic">Historial de Consumo</h3>
-          <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mt-1">Últimos movimientos de aceites</p>
+          <h3 className="font-black text-slate-900 uppercase tracking-tighter text-base italic flex items-center gap-2">
+            <History className="w-4 h-4 text-red-600" />
+            Bitácora
+          </h3>
+          <p className="text-[8px] text-slate-400 font-black uppercase tracking-[0.2em] mt-0.5">Actividad técnica</p>
         </div>
-        <div className="px-3 py-1 bg-slate-900 rounded-lg border border-slate-700 text-[10px] font-black text-slate-400 uppercase tracking-widest">
-          {logs.length} Movimientos
+        <div className="px-2 py-0.5 bg-slate-900 rounded-md text-[8px] font-black text-white uppercase tracking-widest">
+          {logs.length} OPS
         </div>
       </div>
       
-      <div className="max-h-[400px] overflow-y-auto custom-scrollbar">
+      <div className="max-h-[300px] overflow-y-auto custom-scrollbar">
         {logs.length === 0 ? (
-          <div className="p-12 text-center text-slate-600 font-bold uppercase tracking-widest italic text-xs">
-            No se han registrado retiros de aceite todavía.
+          <div className="p-8 text-center text-slate-400 font-black uppercase tracking-widest italic text-[9px]">
+            Sin registros.
           </div>
         ) : (
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="bg-slate-900/30 text-slate-500 uppercase text-[9px] font-black tracking-widest">
-                <th className="px-8 py-4 border-b border-slate-700">Maestro</th>
-                <th className="px-8 py-4 border-b border-slate-700">Producto Utilizado</th>
-                <th className="px-8 py-4 border-b border-slate-700">Fecha y Hora</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800">
-              {logs.map((log) => (
-                <tr key={log.id} className="hover:bg-slate-800/30 transition-colors">
-                  <td className="px-8 py-4">
-                    <div className="flex items-center gap-2">
-                      <span className="w-2 h-2 bg-amber-500 rounded-full"></span>
-                      <span className="font-bold text-slate-200 text-xs">Maestro {log.usedBy}</span>
+          <div className="divide-y divide-slate-100">
+            {logs.map((log) => (
+              <div key={log.id} className="p-4 hover:bg-slate-50 transition-colors group">
+                <div className="flex items-center justify-between mb-1">
+                  <div className="flex items-center gap-1.5">
+                    <div className={`w-1.5 h-1.5 rounded-full ${
+                      log.action === 'CONSUMO' ? 'bg-red-600' : 
+                      log.action === 'INGRESO' ? 'bg-emerald-500' : 'bg-blue-500'
+                    }`}></div>
+                    <span className="font-black text-slate-800 text-[10px] uppercase italic">M. {log.usedBy}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className={`text-[7px] font-black px-1.5 py-0.5 rounded uppercase tracking-widest ${
+                      log.action === 'CONSUMO' ? 'bg-red-50 text-red-600 border border-red-100' : 
+                      log.action === 'INGRESO' ? 'bg-emerald-50 text-emerald-600 border border-emerald-100' : 
+                      'bg-blue-50 text-blue-600 border border-blue-100'
+                    }`}>
+                      {log.action || 'CONSUMO'}
+                    </span>
+                    <span className="text-[8px] font-black text-slate-400 uppercase">
+                      {new Date(log.timestamp).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' })}
+                    </span>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-[11px] font-black text-slate-600 uppercase italic truncate max-w-[120px]">{log.brand}</div>
+                    <div className="text-[8px] text-slate-400 font-bold uppercase flex items-center gap-2">
+                      {log.liters} 
+                      <span className="text-slate-900 bg-slate-100 px-1 rounded">x{log.quantity}</span>
                     </div>
-                  </td>
-                  <td className="px-8 py-4">
-                    <div className="text-xs font-bold text-white uppercase italic">{log.brand}</div>
-                    <div className="text-[9px] text-slate-500 font-black uppercase mt-0.5">{log.liters}</div>
-                  </td>
-                  <td className="px-8 py-4">
-                    <div className="text-[10px] font-bold text-slate-400">
-                      {new Date(log.timestamp).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' })} - {new Date(log.timestamp).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                  </div>
+                  <div className="text-[9px] font-black text-slate-900 bg-slate-100 px-1.5 py-0.5 rounded-md">
+                    {new Date(log.timestamp).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
         )}
       </div>
     </div>

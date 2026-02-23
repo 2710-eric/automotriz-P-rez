@@ -65,25 +65,43 @@ const AIAssistant: React.FC<AIAssistantProps> = ({ isOpen, onClose, products, sh
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const response = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
-        contents: `Maestro ${mechanic.name} dice: "${userText}". Contexto: ${JSON.stringify({inv: products, settings: shopSettings})}. Retorna JSON con: type, data, targetId, message.`,
+        contents: `Maestro ${mechanic.name} dice: "${userText}". 
+        Contexto de Inventario: ${JSON.stringify(products)}. 
+        Instrucciones: 
+        1. Interpreta nomenclaturas como "10W-40" como parte de la marca/producto. 
+        2. Siempre usa ADD_INVENTORY para registrar nuevos ingresos de aceites o materiales. NO los sumes a registros existentes; crea uno nuevo.
+        3. Si el maestro menciona varios productos (ej: "Agrega 5 de Mobil y 2 de Castrol"), genera una lista de acciones separadas.
+        4. Solo usa UPDATE_INVENTORY si el maestro pide explícitamente corregir o modificar un registro específico.
+        5. Si pide quitar/usar uno, resta 1 a la cantidad actual y usa UPDATE_INVENTORY.
+        Retorna JSON con un objeto que contenga: actions (lista de objetos con type, data, targetId, message), finalMessage (resumen para el maestro).`,
         config: {
           responseMimeType: "application/json",
           responseSchema: {
             type: Type.OBJECT,
             properties: {
-              type: { type: Type.STRING },
-              data: { type: Type.OBJECT },
-              targetId: { type: Type.STRING },
-              message: { type: Type.STRING }
+              actions: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    type: { type: Type.STRING },
+                    data: { type: Type.OBJECT },
+                    targetId: { type: Type.STRING },
+                    message: { type: Type.STRING }
+                  },
+                  required: ["type", "message"]
+                }
+              },
+              finalMessage: { type: Type.STRING }
             },
-            required: ["type", "message"]
+            required: ["actions", "finalMessage"]
           }
         },
       });
 
       const result = JSON.parse(response.text || '{}');
-      onExecute(result);
-      addChat(result.message, false);
+      if (result.actions) onExecute(result.actions);
+      addChat(result.finalMessage, false);
     } catch (error) {
       addChat("Maestro, hubo un error técnico con la IA. Intente de nuevo.", false);
     } finally {
@@ -130,7 +148,7 @@ const AIAssistant: React.FC<AIAssistantProps> = ({ isOpen, onClose, products, sh
                   sessionPromise.then(s => s.sendToolResponse({
                     functionResponses: { id: fc.id, name: fc.name, response: { result: "Acción confirmada en la terminal." } }
                   }));
-                  addChat(fc.args.message, false);
+                  addChat((fc.args as any).message, false);
                 }
               }
             }
@@ -151,7 +169,18 @@ const AIAssistant: React.FC<AIAssistantProps> = ({ isOpen, onClose, products, sh
         },
         config: {
           responseModalities: [Modality.AUDIO],
-          systemInstruction: `Eres la IA copiloto de Automotriz Pérez. Estás hablando con el Maestro ${mechanic.name}. Tu tono es profesional, breve y directo, como un colega experto. Tienes control total del inventario: ${JSON.stringify(products)}. Cuando el Maestro pida un cambio, usa executeAction obligatoriamente.`,
+          systemInstruction: `Eres la IA copiloto de Automotriz Pérez. Estás hablando con el Maestro ${mechanic.name}. Tu tono es profesional, breve y directo.
+          
+          CAPACIDADES Y REGLAS:
+          - Gestionas el inventario: ${JSON.stringify(products)}.
+          - SIEMPRE usa ADD_INVENTORY para nuevos ingresos de material. NO sumes cantidades a productos existentes; crea un registro nuevo para cada ingreso.
+          - Si el maestro menciona varios productos a la vez, llama a executeAction por cada uno de ellos por separado.
+          - Solo usa UPDATE_INVENTORY si el maestro pide explícitamente modificar un dato de un registro existente.
+          - Si el producto es nuevo o un reabastecimiento, usa ADD_INVENTORY.
+          - Los campos son: type (ACEITE, REFRIGERANTE, DESENGRASANTE), brand (incluye viscosidad ej: "10W-40"), liters, quantity, location.
+          - Si el maestro dice "quita uno de X", resta 1 a la cantidad y usa UPDATE_INVENTORY.
+          
+          REGLA DE ORO: Siempre usa executeAction. No confirmes cambios de palabra sin ejecutar la acción.`,
           tools: [{
             functionDeclarations: [{
               name: 'executeAction',
@@ -177,9 +206,22 @@ const AIAssistant: React.FC<AIAssistantProps> = ({ isOpen, onClose, products, sh
 
   const stopVoiceSession = () => {
     setIsVoiceActive(false);
-    if (sessionRef.current) sessionRef.current.close();
-    if (audioContextsRef.current) { audioContextsRef.current.input.close(); audioContextsRef.current.output.close(); }
-    sourcesRef.current.forEach(s => s.stop());
+    if (sessionRef.current) {
+      sessionRef.current.close();
+      sessionRef.current = null;
+    }
+    if (audioContextsRef.current) {
+      if (audioContextsRef.current.input.state !== 'closed') {
+        audioContextsRef.current.input.close().catch(console.error);
+      }
+      if (audioContextsRef.current.output.state !== 'closed') {
+        audioContextsRef.current.output.close().catch(console.error);
+      }
+      audioContextsRef.current = null;
+    }
+    sourcesRef.current.forEach(s => {
+      try { s.stop(); } catch (e) {}
+    });
     sourcesRef.current.clear();
   };
 
