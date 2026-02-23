@@ -1,0 +1,7 @@
+{
+  "name": "Automotriz Pérez - Gestión de Inventario",
+  "description": "Una aplicación web moderna para la gestión de inventario de aceites y refrigerantes, con asistente de voz inteligente.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
