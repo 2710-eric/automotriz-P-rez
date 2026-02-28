@@ -67,7 +67,7 @@ const App: React.FC = () => {
 
   // Carga inicial de sesión de usuario
   useEffect(() => {
-    const sessionUser = sessionStorage.getItem('taller_perez_current');
+    const sessionUser = localStorage.getItem('taller_perez_current');
     if (sessionUser) {
       const user = JSON.parse(sessionUser);
       setCurrentUser(user);
@@ -87,13 +87,13 @@ const App: React.FC = () => {
     };
 
     setCurrentUser(newUser);
-    sessionStorage.setItem('taller_perez_current', JSON.stringify(newUser));
+    localStorage.setItem('taller_perez_current', JSON.stringify(newUser));
     socketRef.current?.emit('user:join', newUser);
   };
 
   const handleLogout = () => {
     setCurrentUser(null);
-    sessionStorage.removeItem('taller_perez_current');
+    localStorage.removeItem('taller_perez_current');
     window.location.reload();
   };
 

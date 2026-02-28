@@ -4,6 +4,30 @@ import { createServer } from "http";
 import { Server } from "socket.io";
 import { createServer as createViteServer } from "vite";
 import { Product, User, UsageLog } from "./types";
+import fs from "fs";
+import path from "path";
+
+const DATA_FILE = path.join(process.cwd(), "data.json");
+
+function loadData() {
+  try {
+    if (fs.existsSync(DATA_FILE)) {
+      const data = fs.readFileSync(DATA_FILE, "utf-8");
+      return JSON.parse(data);
+    }
+  } catch (e) {
+    console.error("Error loading data:", e);
+  }
+  return { products: [], usageLogs: [] };
+}
+
+function saveData(products: Product[], usageLogs: UsageLog[]) {
+  try {
+    fs.writeFileSync(DATA_FILE, JSON.stringify({ products, usageLogs }, null, 2));
+  } catch (e) {
+    console.error("Error saving data:", e);
+  }
+}
 
 async function startServer() {
   const app = express();
@@ -17,9 +41,10 @@ async function startServer() {
   const PORT = 3000;
 
   // Server state (Source of Truth)
-  let products: Product[] = [];
+  const initialData = loadData();
+  let products: Product[] = initialData.products;
   let activeUsers: User[] = [];
-  let usageLogs: UsageLog[] = [];
+  let usageLogs: UsageLog[] = initialData.usageLogs;
 
   // WebSocket logic
   io.on("connection", (socket) => {
@@ -42,18 +67,21 @@ async function startServer() {
     // Handle inventory updates
     socket.on("inventory:update", (updatedProducts: Product[]) => {
       products = updatedProducts;
+      saveData(products, usageLogs);
       socket.broadcast.emit("inventory:sync", products);
     });
 
     // Handle usage logs
     socket.on("log:add", (log: UsageLog) => {
       usageLogs = [log, ...usageLogs].slice(0, 100); // Keep last 100
+      saveData(products, usageLogs);
       io.emit("log:sync", usageLogs);
     });
 
     socket.on("system:reset", () => {
       products = [];
       usageLogs = [];
+      saveData(products, usageLogs);
       io.emit("inventory:sync", products);
       io.emit("log:sync", usageLogs);
     });
