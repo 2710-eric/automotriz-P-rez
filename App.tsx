@@ -15,6 +15,8 @@ const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [activeUsers, setActiveUsers] = useState<User[]>([]);
   const [loginName, setLoginName] = useState('');
+  const [isCheckingSession, setIsCheckingSession] = useState(true);
+  const [savedUser, setSavedUser] = useState<User | null>(null);
 
   // Estados de Inventario
   const [products, setProducts] = useState<Product[]>([]);
@@ -70,10 +72,22 @@ const App: React.FC = () => {
     const sessionUser = localStorage.getItem('taller_perez_current');
     if (sessionUser) {
       const user = JSON.parse(sessionUser);
-      setCurrentUser(user);
-      socketRef.current?.emit('user:join', user);
+      setSavedUser(user);
     }
+    setIsCheckingSession(false);
   }, []);
+
+  const handleConfirmSavedUser = () => {
+    if (savedUser) {
+      setCurrentUser(savedUser);
+      socketRef.current?.emit('user:join', savedUser);
+    }
+  };
+
+  const handleClearSavedUser = () => {
+    setSavedUser(null);
+    localStorage.removeItem('taller_perez_current');
+  };
 
   // Manejo de Login
   const handleLogin = (e: React.FormEvent) => {
@@ -268,6 +282,17 @@ const App: React.FC = () => {
   }, [products, searchTerm]);
 
   // Pantalla de Login
+  if (isCheckingSession) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-12 h-12 border-4 border-red-600 border-t-transparent rounded-full animate-spin"></div>
+          <p className="text-slate-400 font-black uppercase tracking-[0.3em] text-[10px]">Verificando Terminal...</p>
+        </div>
+      </div>
+    );
+  }
+
   if (!currentUser) {
     return (
       <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 relative overflow-hidden">
@@ -289,25 +314,49 @@ const App: React.FC = () => {
             <h1 className="text-white text-4xl font-black uppercase tracking-tighter italic">Automotriz Pérez</h1>
             <p className="text-red-100 text-xs font-bold uppercase tracking-[0.3em] mt-2 opacity-80">Gestión de Maestros</p>
           </div>
-          <form onSubmit={handleLogin} className="p-10 space-y-8">
-            <div className="space-y-3">
-              <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Identificación del Personal</label>
-              <div className="relative">
-                <i className="fa-solid fa-user-gear absolute left-5 top-1/2 -translate-y-1/2 text-slate-300"></i>
-                <input 
-                  type="text" 
-                  required
-                  className="w-full pl-14 pr-6 py-5 bg-slate-50 border-2 border-slate-100 focus:border-red-600 rounded-2xl outline-none transition-all font-bold text-slate-700 placeholder:text-slate-300"
-                  placeholder="Nombre del Maestro..."
-                  value={loginName}
-                  onChange={(e) => setLoginName(e.target.value)}
-                />
+
+          {savedUser ? (
+            <div className="p-10 space-y-8">
+              <div className="text-center space-y-2">
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Bienvenido de vuelta, Maestro</p>
+                <h2 className="text-2xl font-black text-slate-900 uppercase italic">{savedUser.name}</h2>
+              </div>
+              <div className="space-y-3">
+                <button 
+                  onClick={handleConfirmSavedUser}
+                  className="w-full bg-slate-900 text-white font-black py-5 rounded-2xl hover:bg-slate-800 transition-all uppercase tracking-widest text-sm shadow-xl shadow-slate-900/20 active:scale-[0.98]"
+                >
+                  Continuar Sesión
+                </button>
+                <button 
+                  onClick={handleClearSavedUser}
+                  className="w-full bg-slate-50 text-slate-400 font-black py-4 rounded-2xl hover:bg-slate-100 transition-all uppercase tracking-widest text-[10px] active:scale-[0.98]"
+                >
+                  No soy yo, cambiar maestro
+                </button>
               </div>
             </div>
-            <button type="submit" className="w-full bg-slate-900 text-white font-black py-5 rounded-2xl hover:bg-slate-800 transition-all uppercase tracking-widest text-sm shadow-xl shadow-slate-900/20 active:scale-[0.98]">
-              Entrar al Sistema
-            </button>
-          </form>
+          ) : (
+            <form onSubmit={handleLogin} className="p-10 space-y-8">
+              <div className="space-y-3">
+                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Identificación del Personal</label>
+                <div className="relative">
+                  <i className="fa-solid fa-user-gear absolute left-5 top-1/2 -translate-y-1/2 text-slate-300"></i>
+                  <input 
+                    type="text" 
+                    required
+                    className="w-full pl-14 pr-6 py-5 bg-slate-50 border-2 border-slate-100 focus:border-red-600 rounded-2xl outline-none transition-all font-bold text-slate-700 placeholder:text-slate-300"
+                    placeholder="Nombre del Maestro..."
+                    value={loginName}
+                    onChange={(e) => setLoginName(e.target.value)}
+                  />
+                </div>
+              </div>
+              <button type="submit" className="w-full bg-slate-900 text-white font-black py-5 rounded-2xl hover:bg-slate-800 transition-all uppercase tracking-widest text-sm shadow-xl shadow-slate-900/20 active:scale-[0.98]">
+                Entrar al Sistema
+              </button>
+            </form>
+          )}
         </motion.div>
       </div>
     );
