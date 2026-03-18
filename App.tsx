@@ -1,12 +1,77 @@
 
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, Component } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { motion, AnimatePresence } from 'motion/react';
 import { Product, ProductType, User, UsageLog, ShopSettings, Mechanic } from './types';
 import ConsumptionChart from './components/ConsumptionChart';
 import UsageHistory from './components/UsageHistory';
 import AIAssistant from './components/AIAssistant';
-import { Package, Droplets, Thermometer, History, TrendingUp, AlertTriangle, Users, Plus, Search, LogOut, Bot, LayoutDashboard } from 'lucide-react';
+import { Package, Droplets, Thermometer, History, TrendingUp, AlertTriangle, Users, Plus, Search, LogOut, Bot, LayoutDashboard, RefreshCcw } from 'lucide-react';
+import { 
+  db, auth, loginWithGoogle, handleFirestoreError, OperationType, 
+  collection, doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, query, orderBy, limit 
+} from './firebase';
+import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
+
+// Error Boundary Component
+interface ErrorBoundaryProps {
+  children: React.ReactNode;
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  errorInfo: string | null;
+}
+
+class ErrorBoundary extends Component<any, any> {
+  state = { hasError: false, errorInfo: null };
+
+  static getDerivedStateFromError(error: any) {
+    return { hasError: true, errorInfo: error.message };
+  }
+
+  componentDidCatch(error: any, errorInfo: any) {
+    console.error("ErrorBoundary caught an error", error, errorInfo);
+  }
+
+  render() {
+    const { hasError, errorInfo } = this.state;
+    if (hasError) {
+      let displayMessage = "Ha ocurrido un error inesperado.";
+      try {
+        const parsed = JSON.parse(errorInfo || "");
+        if (parsed.error === "Missing or insufficient permissions.") {
+          displayMessage = "No tienes permisos suficientes para realizar esta acción o ver estos datos. Por favor, asegúrate de estar correctamente identificado.";
+        }
+      } catch (e) {
+        // Not a JSON error
+      }
+
+      return (
+        <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6 text-center">
+          <div className="max-w-md w-full bg-white rounded-3xl p-10 shadow-2xl border border-white/20">
+            <div className="bg-red-100 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6">
+              <AlertTriangle className="text-red-600 w-10 h-10" />
+            </div>
+            <h2 className="text-2xl font-black text-slate-900 uppercase italic mb-4">¡Ups! Algo salió mal</h2>
+            <p className="text-slate-600 font-medium mb-8 leading-relaxed">
+              {displayMessage}
+            </p>
+            <button 
+              onClick={() => window.location.reload()}
+              className="w-full bg-slate-900 text-white font-black py-4 rounded-2xl hover:bg-slate-800 transition-all uppercase tracking-widest text-sm flex items-center justify-center gap-3"
+            >
+              <RefreshCcw className="w-5 h-5" />
+              Recargar Aplicación
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return (this as any).props.children;
+  }
+}
 
 const LOW_STOCK_ALERT = 5;
 
@@ -14,9 +79,7 @@ const App: React.FC = () => {
   // Estados de Usuario
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [activeUsers, setActiveUsers] = useState<User[]>([]);
-  const [loginName, setLoginName] = useState('');
   const [isCheckingSession, setIsCheckingSession] = useState(true);
-  const [savedUser, setSavedUser] = useState<User | null>(null);
 
   // Estados de Inventario
   const [products, setProducts] = useState<Product[]>([]);
@@ -24,6 +87,10 @@ const App: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [isAiOpen, setIsAiOpen] = useState(false);
+
+  const isAdmin = useMemo(() => {
+    return currentUser?.email === 'eric.27102004@gmail.com';
+  }, [currentUser]);
 
   // Configuración del Taller (Mock)
   const [shopSettings] = useState<ShopSettings>({ phone: '555-0123' });
@@ -39,27 +106,13 @@ const App: React.FC = () => {
 
   const socketRef = useRef<Socket | null>(null);
 
-  // WebSocket Connection
+  // WebSocket Connection (Solo para presencia)
   useEffect(() => {
     const socket = io();
     socketRef.current = socket;
 
-    socket.on('init', ({ products, activeUsers, usageLogs }) => {
-      setProducts(products);
-      setActiveUsers(activeUsers);
-      setUsageLogs(usageLogs);
-    });
-
-    socket.on('inventory:sync', (syncedProducts: Product[]) => {
-      setProducts(syncedProducts);
-    });
-
     socket.on('user:list', (users: User[]) => {
       setActiveUsers(users);
-    });
-
-    socket.on('log:sync', (logs: UsageLog[]) => {
-      setUsageLogs(logs);
     });
 
     return () => {
@@ -67,92 +120,117 @@ const App: React.FC = () => {
     };
   }, []);
 
-  // Carga inicial de sesión de usuario
+  // Firebase Firestore Listeners
   useEffect(() => {
-    const sessionUser = localStorage.getItem('taller_perez_current');
-    if (sessionUser) {
-      const user = JSON.parse(sessionUser);
-      setSavedUser(user);
-    }
-    setIsCheckingSession(false);
+    if (!currentUser) return;
+
+    const qProducts = query(collection(db, 'products'));
+    const unsubscribeProducts = onSnapshot(qProducts, (snapshot) => {
+      const productsData = snapshot.docs.map(doc => doc.data() as Product);
+      setProducts(productsData);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, 'products');
+    });
+
+    const qLogs = query(collection(db, 'usageLogs'), orderBy('timestamp', 'desc'), limit(100));
+    const unsubscribeLogs = onSnapshot(qLogs, (snapshot) => {
+      const logsData = snapshot.docs.map(doc => doc.data() as UsageLog);
+      setUsageLogs(logsData);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, 'usageLogs');
+    });
+
+    return () => {
+      unsubscribeProducts();
+      unsubscribeLogs();
+    };
+  }, [currentUser]);
+
+  // Firebase Auth Listener
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (firebaseUser) {
+        const user: User = {
+          id: firebaseUser.uid,
+          uid: firebaseUser.uid,
+          name: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'Maestro',
+          email: firebaseUser.email,
+          lastActive: Date.now()
+        };
+        setCurrentUser(user);
+        socketRef.current?.emit('user:join', user);
+
+        // Sincronizar perfil de usuario en Firestore
+        try {
+          await setDoc(doc(db, 'users', firebaseUser.uid), {
+            uid: firebaseUser.uid,
+            name: user.name,
+            email: firebaseUser.email,
+            lastActive: Date.now(),
+            role: 'user'
+          }, { merge: true });
+        } catch (error) {
+          console.error("Error al sincronizar perfil en Firestore:", error);
+        }
+      } else {
+        setCurrentUser(null);
+      }
+      setIsCheckingSession(false);
+    });
+
+    return () => unsubscribe();
   }, []);
 
-  const handleConfirmSavedUser = () => {
-    if (savedUser) {
-      setCurrentUser(savedUser);
-      socketRef.current?.emit('user:join', savedUser);
+  const handleGoogleLogin = async () => {
+    try {
+      await loginWithGoogle();
+    } catch (error) {
+      alert("Error al iniciar sesión con Google. Por favor intenta de nuevo.");
     }
   };
 
-  const handleClearSavedUser = () => {
-    setSavedUser(null);
-    localStorage.removeItem('taller_perez_current');
-  };
-
-  // Manejo de Login
-  const handleLogin = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!loginName.trim()) return;
-
-    const newUser: User = {
-      id: crypto.randomUUID(),
-      name: loginName.trim(),
-      lastActive: Date.now()
-    };
-
-    setCurrentUser(newUser);
-    localStorage.setItem('taller_perez_current', JSON.stringify(newUser));
-    socketRef.current?.emit('user:join', newUser);
-  };
-
-  const handleLogout = () => {
-    setCurrentUser(null);
-    localStorage.removeItem('taller_perez_current');
-    window.location.reload();
-  };
-
-  const handleResetSystem = () => {
-    if (confirm('¿ESTÁS SEGURO? Esta acción ELIMINARÁ TODO el inventario y la bitácora para el lanzamiento.')) {
-      socketRef.current?.emit('system:reset');
+  const handleLogout = async () => {
+    try {
+      await auth.signOut();
+    } catch (error) {
+      console.error("Error signing out:", error);
     }
   };
 
   // Acciones de Inventario
-  const handleAddOrUpdate = (e: React.FormEvent) => {
+  const handleAddOrUpdate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.brand || !formData.liters) return;
 
-    let updatedProducts: Product[];
-    let logAction: 'INGRESO' | 'EDICION' = 'INGRESO';
-    let targetProduct: Product;
-
-    if (editingId) {
-      updatedProducts = products.map(p => p.id === editingId ? { ...formData, id: p.id } : p);
-      targetProduct = updatedProducts.find(p => p.id === editingId)!;
-      logAction = 'EDICION';
-      setEditingId(null);
-    } else {
-      const newProduct: Product = { ...formData, id: crypto.randomUUID() };
-      updatedProducts = [newProduct, ...products];
-      targetProduct = newProduct;
-      logAction = 'INGRESO';
-    }
+    const productId = editingId || crypto.randomUUID();
+    const logAction: 'INGRESO' | 'EDICION' = editingId ? 'EDICION' : 'INGRESO';
+    
+    const productData: Product = {
+      ...formData,
+      id: productId,
+      lastUpdated: Date.now()
+    };
 
     const newLog: UsageLog = {
       id: crypto.randomUUID(),
       usedBy: currentUser?.name || 'Desconocido',
-      brand: targetProduct.brand,
-      type: targetProduct.type,
-      liters: targetProduct.liters,
+      brand: productData.brand,
+      type: productData.type,
+      liters: productData.liters,
       timestamp: Date.now(),
       action: logAction,
-      quantity: targetProduct.quantity
+      quantity: productData.quantity
     };
 
-    setProducts(updatedProducts);
-    socketRef.current?.emit('inventory:update', updatedProducts);
-    socketRef.current?.emit('log:add', newLog);
-    setFormData({ type: ProductType.ACEITE, brand: '', liters: '', quantity: 0, location: 'Principal' });
+    try {
+      await setDoc(doc(db, 'products', productId), productData);
+      await setDoc(doc(db, 'usageLogs', newLog.id), newLog);
+      
+      setEditingId(null);
+      setFormData({ type: ProductType.ACEITE, brand: '', liters: '', quantity: 0, location: 'Principal' });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, `products/${productId} or usageLogs/${newLog.id}`);
+    }
   };
 
   const handleEdit = (product: Product) => {
@@ -168,15 +246,17 @@ const App: React.FC = () => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const handleDelete = (id: string) => {
+  const handleDelete = async (id: string) => {
     if (confirm('¿Estás seguro de eliminar este producto?')) {
-      const updatedProducts = products.filter(p => p.id !== id);
-      setProducts(updatedProducts);
-      socketRef.current?.emit('inventory:update', updatedProducts);
+      try {
+        await deleteDoc(doc(db, 'products', id));
+      } catch (error) {
+        handleFirestoreError(error, OperationType.DELETE, `products/${id}`);
+      }
     }
   };
 
-  const handleUseProduct = (product: Product) => {
+  const handleUseProduct = async (product: Product) => {
     if (product.quantity <= 0) {
       alert('No hay stock disponible para este producto.');
       return;
@@ -193,52 +273,58 @@ const App: React.FC = () => {
       quantity: 1
     };
 
-    const updatedProducts = products.map(p => p.id === product.id ? { ...p, quantity: p.quantity - 1 } : p);
-    setProducts(updatedProducts);
-    socketRef.current?.emit('inventory:update', updatedProducts);
-    socketRef.current?.emit('log:add', newLog);
+    try {
+      await updateDoc(doc(db, 'products', product.id), {
+        quantity: product.quantity - 1,
+        lastUpdated: Date.now()
+      });
+      await setDoc(doc(db, 'usageLogs', newLog.id), newLog);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `products/${product.id}`);
+    }
   };
 
   // Manejador de acciones de IA
-  const handleAiExecute = (actions: any | any[]) => {
+  const handleAiExecute = async (actions: any | any[]) => {
     const actionList = Array.isArray(actions) ? actions : [actions];
     console.log("IA Actions:", actionList);
     
-    setProducts(currentProducts => {
-      let tempProducts = [...currentProducts];
-      const logsToEmit: UsageLog[] = [];
-
-      actionList.forEach(action => {
+    for (const action of actionList) {
+      try {
         switch (action.type) {
-          case 'UPDATE_INVENTORY':
-            tempProducts = tempProducts.map(p => {
-              if (p.id === action.targetId) {
-                const newData = { ...p, ...action.data };
-                if ('quantity' in newData) newData.quantity = Number(newData.quantity) || 0;
-                
-                const diff = Math.abs((Number(action.data.quantity) || p.quantity) - p.quantity);
-                const isDecrement = action.data.quantity !== undefined && action.data.quantity < p.quantity;
-                logsToEmit.push({
-                  id: crypto.randomUUID(),
-                  usedBy: `IA (${currentUser?.name})`,
-                  brand: newData.brand,
-                  type: newData.type,
-                  liters: newData.liters,
-                  timestamp: Date.now(),
-                  action: isDecrement ? 'CONSUMO' : 'EDICION',
-                  quantity: diff || newData.quantity
-                });
-                return newData;
-              }
-              return p;
-            });
+          case 'UPDATE_INVENTORY': {
+            const productRef = doc(db, 'products', action.targetId);
+            const productSnap = await getDoc(productRef);
+            if (productSnap.exists()) {
+              const p = productSnap.data() as Product;
+              const newData = { ...p, ...action.data, lastUpdated: Date.now() };
+              if ('quantity' in newData) newData.quantity = Number(newData.quantity) || 0;
+              
+              const diff = Math.abs((Number(action.data.quantity) || p.quantity) - p.quantity);
+              const isDecrement = action.data.quantity !== undefined && action.data.quantity < p.quantity;
+              
+              const newLog: UsageLog = {
+                id: crypto.randomUUID(),
+                usedBy: `IA (${currentUser?.name})`,
+                brand: newData.brand,
+                type: newData.type,
+                liters: newData.liters,
+                timestamp: Date.now(),
+                action: isDecrement ? 'CONSUMO' : 'EDICION',
+                quantity: diff || newData.quantity
+              };
+              
+              await setDoc(productRef, newData);
+              await setDoc(doc(db, 'usageLogs', newLog.id), newLog);
+            }
             break;
-          case 'ADD_INVENTORY':
-            const newProduct = { ...action.data, id: crypto.randomUUID() };
+          }
+          case 'ADD_INVENTORY': {
+            const newId = crypto.randomUUID();
+            const newProduct = { ...action.data, id: newId, lastUpdated: Date.now() };
             if ('quantity' in newProduct) newProduct.quantity = Number(newProduct.quantity) || 0;
-            tempProducts = [newProduct, ...tempProducts];
             
-            logsToEmit.push({
+            const newLog: UsageLog = {
               id: crypto.randomUUID(),
               usedBy: `IA (${currentUser?.name})`,
               brand: newProduct.brand,
@@ -247,18 +333,20 @@ const App: React.FC = () => {
               timestamp: Date.now(),
               action: 'INGRESO',
               quantity: newProduct.quantity
-            });
+            };
+            
+            await setDoc(doc(db, 'products', newId), newProduct);
+            await setDoc(doc(db, 'usageLogs', newLog.id), newLog);
             break;
+          }
           case 'DELETE_INVENTORY':
-            tempProducts = tempProducts.filter(p => p.id !== action.targetId);
+            await deleteDoc(doc(db, 'products', action.targetId));
             break;
         }
-      });
-
-      socketRef.current?.emit('inventory:update', tempProducts);
-      logsToEmit.forEach(log => socketRef.current?.emit('log:add', log));
-      return tempProducts;
-    });
+      } catch (error) {
+        console.error("Error executing IA action:", error);
+      }
+    }
   };
 
   // Estadísticas
@@ -315,55 +403,32 @@ const App: React.FC = () => {
             <p className="text-red-100 text-xs font-bold uppercase tracking-[0.3em] mt-2 opacity-80">Gestión de Maestros</p>
           </div>
 
-          {savedUser ? (
-            <div className="p-10 space-y-8">
-              <div className="text-center space-y-2">
-                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Bienvenido de vuelta, Maestro</p>
-                <h2 className="text-2xl font-black text-slate-900 uppercase italic">{savedUser.name}</h2>
-              </div>
-              <div className="space-y-3">
-                <button 
-                  onClick={handleConfirmSavedUser}
-                  className="w-full bg-slate-900 text-white font-black py-5 rounded-2xl hover:bg-slate-800 transition-all uppercase tracking-widest text-sm shadow-xl shadow-slate-900/20 active:scale-[0.98]"
-                >
-                  Continuar Sesión
-                </button>
-                <button 
-                  onClick={handleClearSavedUser}
-                  className="w-full bg-slate-50 text-slate-400 font-black py-4 rounded-2xl hover:bg-slate-100 transition-all uppercase tracking-widest text-[10px] active:scale-[0.98]"
-                >
-                  No soy yo, cambiar maestro
-                </button>
-              </div>
+          <div className="p-10 space-y-8">
+            <div className="text-center space-y-2">
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest italic">Acceso de Personal Autorizado</p>
+              <h2 className="text-2xl font-black text-slate-900 uppercase italic">Iniciar Sesión</h2>
             </div>
-          ) : (
-            <form onSubmit={handleLogin} className="p-10 space-y-8">
-              <div className="space-y-3">
-                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Identificación del Personal</label>
-                <div className="relative">
-                  <i className="fa-solid fa-user-gear absolute left-5 top-1/2 -translate-y-1/2 text-slate-300"></i>
-                  <input 
-                    type="text" 
-                    required
-                    className="w-full pl-14 pr-6 py-5 bg-slate-50 border-2 border-slate-100 focus:border-red-600 rounded-2xl outline-none transition-all font-bold text-slate-700 placeholder:text-slate-300"
-                    placeholder="Nombre del Maestro..."
-                    value={loginName}
-                    onChange={(e) => setLoginName(e.target.value)}
-                  />
-                </div>
-              </div>
-              <button type="submit" className="w-full bg-slate-900 text-white font-black py-5 rounded-2xl hover:bg-slate-800 transition-all uppercase tracking-widest text-sm shadow-xl shadow-slate-900/20 active:scale-[0.98]">
-                Entrar al Sistema
-              </button>
-            </form>
-          )}
+            
+            <button 
+              onClick={handleGoogleLogin}
+              className="w-full bg-slate-900 text-white font-black py-5 rounded-2xl hover:bg-slate-800 transition-all uppercase tracking-widest text-sm shadow-xl shadow-slate-900/20 active:scale-[0.98] flex items-center justify-center gap-4"
+            >
+              <i className="fa-brands fa-google text-xl"></i>
+              Continuar con Google
+            </button>
+
+            <p className="text-[10px] text-slate-400 text-center font-bold uppercase tracking-widest leading-relaxed">
+              Al ingresar, tu sesión quedará guardada de forma segura en este terminal.
+            </p>
+          </div>
         </motion.div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-[#F8FAFC] flex flex-col font-sans text-slate-900">
+    <ErrorBoundary>
+      <div className="min-h-screen bg-[#F8FAFC] flex flex-col font-sans text-slate-900">
       {/* Encabezado */}
       <header className="bg-slate-900 text-white shadow-2xl sticky top-0 z-50 border-b border-white/5">
         <div className="max-w-7xl mx-auto px-6 h-24 flex items-center justify-between">
@@ -378,7 +443,9 @@ const App: React.FC = () => {
               <h1 className="text-2xl font-black uppercase tracking-tighter italic leading-none">Automotriz Pérez</h1>
               <div className="flex items-center gap-2 mt-1">
                 <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></span>
-                <p className="text-[10px] text-slate-400 font-black uppercase tracking-[0.2em]">Terminal de Control Activa</p>
+                <p className={`text-[9px] font-black uppercase tracking-[0.2em] ${activeUsers.length > 0 ? 'text-emerald-500' : 'text-slate-400'}`}>
+                  {activeUsers.length} {activeUsers.length === 1 ? 'Maestro' : 'Maestros'} en Línea
+                </p>
               </div>
             </div>
           </div>
@@ -393,13 +460,6 @@ const App: React.FC = () => {
                 <i className="fa-solid fa-user-shield text-slate-400"></i>
               </div>
             </div>
-            <button 
-              onClick={handleResetSystem} 
-              className="w-12 h-12 bg-white/5 hover:bg-orange-600/20 hover:text-orange-500 rounded-2xl flex items-center justify-center transition-all border border-white/10 group"
-              title="Reiniciar Sistema (Limpiar Todo)"
-            >
-              <AlertTriangle className="w-5 h-5 transition-transform group-hover:scale-110" />
-            </button>
             <button 
               onClick={handleLogout} 
               className="w-12 h-12 bg-white/5 hover:bg-red-600/20 hover:text-red-500 rounded-2xl flex items-center justify-center transition-all border border-white/10 group"
@@ -684,12 +744,14 @@ const App: React.FC = () => {
                             >
                               <i className="fa-solid fa-pen-to-square text-[10px]"></i>
                             </button>
-                            <button 
-                              onClick={() => handleDelete(p.id)} 
-                              className="w-8 h-8 bg-red-50 text-red-600 rounded-lg flex items-center justify-center hover:bg-red-600 hover:text-white transition-all shadow-sm"
-                            >
-                              <i className="fa-solid fa-trash-can text-[10px]"></i>
-                            </button>
+                            {isAdmin && (
+                              <button 
+                                onClick={() => handleDelete(p.id)} 
+                                className="w-8 h-8 bg-red-50 text-red-600 rounded-lg flex items-center justify-center hover:bg-red-600 hover:text-white transition-all shadow-sm"
+                              >
+                                <i className="fa-solid fa-trash-can text-[10px]"></i>
+                              </button>
+                            )}
                           </div>
                         </td>
                       </motion.tr>
@@ -723,14 +785,16 @@ const App: React.FC = () => {
       </motion.button>
 
       {/* AI Assistant Sidebar */}
-      <AIAssistant 
-        isOpen={isAiOpen} 
-        onClose={() => setIsAiOpen(false)} 
-        products={products}
-        shopSettings={shopSettings}
-        mechanic={{ id: currentUser.id, name: currentUser.name }}
-        onExecute={handleAiExecute}
-      />
+      {currentUser && (
+        <AIAssistant 
+          isOpen={isAiOpen} 
+          onClose={() => setIsAiOpen(false)} 
+          products={products}
+          shopSettings={shopSettings}
+          mechanic={{ id: currentUser.id, name: currentUser.name }}
+          onExecute={handleAiExecute}
+        />
+      )}
 
       <footer className="mt-auto bg-slate-950 py-16 border-t border-white/5">
         <div className="max-w-7xl mx-auto px-6 text-center">
@@ -749,6 +813,7 @@ const App: React.FC = () => {
         </div>
       </footer>
     </div>
+    </ErrorBoundary>
   );
 };
 

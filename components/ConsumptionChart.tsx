@@ -51,7 +51,7 @@ const ConsumptionChart: React.FC<ConsumptionChartProps> = ({ logs }) => {
   }, [logs]);
 
   return (
-    <div className="bg-white p-8 rounded-[2.5rem] shadow-sm border border-slate-200">
+    <div className="bg-white p-8 rounded-[2.5rem] shadow-sm border border-slate-200 overflow-hidden min-w-0">
       <div className="flex items-center justify-between mb-8">
         <div>
           <h3 className="text-xl font-black text-slate-900 uppercase tracking-tighter italic flex items-center gap-3">
@@ -64,8 +64,8 @@ const ConsumptionChart: React.FC<ConsumptionChartProps> = ({ logs }) => {
         </div>
       </div>
 
-      <div className="h-[250px] w-full">
-        <ResponsiveContainer width="100%" height="100%">
+      <div className="w-full min-w-0">
+        <ResponsiveContainer width="100%" aspect={2.5} minWidth={0} debounce={100}>
           <BarChart data={data} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
             <XAxis 

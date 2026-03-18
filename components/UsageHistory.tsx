@@ -34,11 +34,13 @@ const UsageHistory: React.FC<UsageHistoryProps> = ({ logs }) => {
               <div key={log.id} className="p-4 hover:bg-slate-50 transition-colors group">
                 <div className="flex items-center justify-between mb-1">
                   <div className="flex items-center gap-1.5">
-                    <div className={`w-1.5 h-1.5 rounded-full ${
+                    <div className={`w-2 h-2 rounded-full ${
                       log.action === 'CONSUMO' ? 'bg-red-600' : 
                       log.action === 'INGRESO' ? 'bg-emerald-500' : 'bg-blue-500'
-                    }`}></div>
-                    <span className="font-black text-slate-800 text-[10px] uppercase italic">M. {log.usedBy}</span>
+                    } shadow-[0_0_5px_rgba(0,0,0,0.1)]`}></div>
+                    <span className="font-black text-slate-900 text-[12px] uppercase italic">
+                      <span className="text-red-600 mr-1">Maestro:</span> {log.usedBy}
+                    </span>
                   </div>
                   <div className="flex items-center gap-2">
                     <span className={`text-[7px] font-black px-1.5 py-0.5 rounded uppercase tracking-widest ${

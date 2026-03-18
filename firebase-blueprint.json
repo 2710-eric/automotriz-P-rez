@@ -1,0 +1,46 @@
+{
+  "entities": {
+    "Product": {
+      "title": "Product",
+      "description": "An inventory item in the shop",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "type": "string", "enum": ["Aceite", "Refrigerante", "Desengrasante"] },
+        "brand": { "type": "string" },
+        "liters": { "type": "string" },
+        "quantity": { "type": "number" },
+        "location": { "type": "string" },
+        "notes": { "type": "string" },
+        "lastUpdated": { "type": "number" }
+      },
+      "required": ["id", "type", "brand", "liters", "quantity"]
+    },
+    "UsageLog": {
+      "title": "UsageLog",
+      "description": "A record of an inventory action",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "usedBy": { "type": "string" },
+        "brand": { "type": "string" },
+        "type": { "type": "string" },
+        "liters": { "type": "string" },
+        "timestamp": { "type": "number" },
+        "action": { "type": "string", "enum": ["CONSUMO", "INGRESO", "EDICION"] },
+        "quantity": { "type": "number" }
+      },
+      "required": ["id", "usedBy", "brand", "type", "liters", "timestamp", "action", "quantity"]
+    }
+  },
+  "firestore": {
+    "products": {
+      "schema": "Product",
+      "description": "Inventory products"
+    },
+    "usageLogs": {
+      "schema": "UsageLog",
+      "description": "Activity logs"
+    }
+  }
+}

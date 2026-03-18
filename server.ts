@@ -3,31 +3,8 @@ import express from "express";
 import { createServer } from "http";
 import { Server } from "socket.io";
 import { createServer as createViteServer } from "vite";
-import { Product, User, UsageLog } from "./types";
-import fs from "fs";
+import { User } from "./types";
 import path from "path";
-
-const DATA_FILE = path.join(process.cwd(), "data.json");
-
-function loadData() {
-  try {
-    if (fs.existsSync(DATA_FILE)) {
-      const data = fs.readFileSync(DATA_FILE, "utf-8");
-      return JSON.parse(data);
-    }
-  } catch (e) {
-    console.error("Error loading data:", e);
-  }
-  return { products: [], usageLogs: [] };
-}
-
-function saveData(products: Product[], usageLogs: UsageLog[]) {
-  try {
-    fs.writeFileSync(DATA_FILE, JSON.stringify({ products, usageLogs }, null, 2));
-  } catch (e) {
-    console.error("Error saving data:", e);
-  }
-}
 
 async function startServer() {
   const app = express();
@@ -40,18 +17,15 @@ async function startServer() {
 
   const PORT = 3000;
 
-  // Server state (Source of Truth)
-  const initialData = loadData();
-  let products: Product[] = initialData.products;
+  // Server state (Presence only, data is in Firestore)
   let activeUsers: User[] = [];
-  let usageLogs: UsageLog[] = initialData.usageLogs;
 
   // WebSocket logic
   io.on("connection", (socket) => {
     console.log("User connected:", socket.id);
 
-    // Send initial state to the new client
-    socket.emit("init", { products, activeUsers, usageLogs });
+    // Send initial presence state to the new client
+    socket.emit("user:list", activeUsers);
 
     // Handle user login/presence
     socket.on("user:join", (user: User) => {
@@ -62,28 +36,6 @@ async function startServer() {
       }
       // Store user info on socket for cleanup
       (socket as any).userId = user.id;
-    });
-
-    // Handle inventory updates
-    socket.on("inventory:update", (updatedProducts: Product[]) => {
-      products = updatedProducts;
-      saveData(products, usageLogs);
-      socket.broadcast.emit("inventory:sync", products);
-    });
-
-    // Handle usage logs
-    socket.on("log:add", (log: UsageLog) => {
-      usageLogs = [log, ...usageLogs].slice(0, 100); // Keep last 100
-      saveData(products, usageLogs);
-      io.emit("log:sync", usageLogs);
-    });
-
-    socket.on("system:reset", () => {
-      products = [];
-      usageLogs = [];
-      saveData(products, usageLogs);
-      io.emit("inventory:sync", products);
-      io.emit("log:sync", usageLogs);
     });
 
     socket.on("disconnect", () => {
@@ -104,7 +56,11 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static("dist"));
+    const distPath = path.join(process.cwd(), 'dist');
+    app.use(express.static(distPath));
+    app.get('*', (req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
   }
 
   httpServer.listen(PORT, "0.0.0.0", () => {

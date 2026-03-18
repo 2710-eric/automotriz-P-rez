@@ -1,0 +1,103 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: products
+    // Document ID: auto-generated or UUID
+    // Fields:
+    //   - id: string (required) - Unique identifier
+    //   - type: string (required) - Aceite, Refrigerante, Desengrasante
+    //   - brand: string (required) - Brand name
+    //   - liters: string (required) - Liter description
+    //   - quantity: number (required) - Current stock
+    //   - location: string (optional) - Storage location
+    //   - notes: string (optional) - Additional info
+    //   - lastUpdated: number (optional) - Timestamp
+    //
+    // Collection: usageLogs
+    // Document ID: auto-generated or UUID
+    // Fields:
+    //   - id: string (required) - Unique identifier
+    //   - usedBy: string (required) - Name of the maestro
+    //   - brand: string (required) - Product brand
+    //   - type: string (required) - Product type
+    //   - liters: string (required) - Product liters
+    //   - timestamp: number (required) - Action timestamp
+    //   - action: string (required) - CONSUMO, INGRESO, EDICION
+    //   - quantity: number (required) - Quantity involved
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (
+          (request.auth.token.email == "eric.27102004@gmail.com" && request.auth.token.email_verified == true) ||
+          (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin')
+        );
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    // Domain Validators
+    function isValidProduct(data) {
+      return hasRequiredFields(['id', 'type', 'brand', 'liters', 'quantity']) &&
+             data.type in ['Aceite', 'Refrigerante', 'Desengrasante'] &&
+             data.brand is string && data.brand.size() > 0 && data.brand.size() < 255 &&
+             data.liters is string && data.liters.size() > 0 && data.liters.size() < 100 &&
+             data.quantity is number && data.quantity >= 0;
+    }
+
+    function isValidUsageLog(data) {
+      return hasRequiredFields(['id', 'usedBy', 'brand', 'type', 'liters', 'timestamp', 'action', 'quantity']) &&
+             data.usedBy is string && data.usedBy.size() > 0 && data.usedBy.size() < 255 &&
+             data.action in ['CONSUMO', 'INGRESO', 'EDICION'] &&
+             data.timestamp is number &&
+             data.quantity is number && data.quantity >= 0;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    // Products Collection
+    match /products/{productId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidProduct(request.resource.data);
+      allow update: if isAuthenticated() && isValidProduct(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    // Usage Logs Collection
+    match /usageLogs/{logId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidUsageLog(request.resource.data);
+      allow update: if false; // Logs should be immutable
+      allow delete: if isAdmin();
+    }
+
+    // Users Collection (for roles)
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+      allow create: if isAuthenticated() && (request.auth.uid == userId && request.resource.data.role == 'user') || isAdmin();
+      allow update: if isAuthenticated() && (request.auth.uid == userId && request.resource.data.role == resource.data.role) || isAdmin();
+    }
+  }
+}

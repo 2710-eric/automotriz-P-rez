@@ -19,7 +19,9 @@ export interface Product {
 
 export interface User {
   id: string;
+  uid?: string;
   name: string;
+  email?: string | null;
   lastActive: number;
 }
 
