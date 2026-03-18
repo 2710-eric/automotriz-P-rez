@@ -1,5 +1,5 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
+import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, setPersistence, browserLocalPersistence, User as FirebaseUser } from 'firebase/auth';
 import { getFirestore, collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, onSnapshot, query, orderBy, limit, getDocFromServer } from 'firebase/firestore';
 
 // Import the Firebase configuration
@@ -9,6 +9,10 @@ import firebaseConfig from './firebase-applet-config.json';
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth();
+
+// Set persistence to local (session survives tab close)
+setPersistence(auth, browserLocalPersistence).catch(console.error);
+
 export const googleProvider = new GoogleAuthProvider();
 
 // Error Handling Spec for Firestore Permissions
@@ -65,14 +69,16 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
 
 // Validate Connection to Firestore
 export async function testConnection() {
+  console.log("Testing Firestore connection with databaseId:", firebaseConfig.firestoreDatabaseId);
   try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
+    const testDoc = doc(db, 'test', 'connection');
+    await getDocFromServer(testDoc);
     console.log("Firestore connection test successful.");
   } catch (error) {
+    console.error("Firestore connection test failed:", error);
     if(error instanceof Error && error.message.includes('the client is offline')) {
       console.error("Please check your Firebase configuration. The client is offline.");
     }
-    // Skip logging for other errors, as this is simply a connection test.
   }
 }
 
@@ -81,8 +87,17 @@ export const loginWithGoogle = async () => {
   try {
     const result = await signInWithPopup(auth, googleProvider);
     return result.user;
-  } catch (error) {
+  } catch (error: any) {
     console.error("Error during Google Login:", error);
+    if (error.code === 'auth/unauthorized-domain') {
+      throw new Error("DOMINIO_NO_AUTORIZADO: Esta dirección web no está autorizada en Firebase. Por favor, añade este dominio en la consola de Firebase (Authentication > Settings > Authorized Domains).");
+    }
+    if (error.code === 'auth/popup-blocked') {
+      throw new Error("POPUP_BLOQUEADO: El navegador bloqueó la ventana de inicio de sesión. Por favor, permite las ventanas emergentes para este sitio.");
+    }
+    if (error.code === 'auth/cancelled-popup-request') {
+      throw new Error("LOGIN_CANCELADO: Se cerró la ventana de inicio de sesión antes de completar el proceso.");
+    }
     throw error;
   }
 };

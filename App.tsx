@@ -9,7 +9,8 @@ import AIAssistant from './components/AIAssistant';
 import { Package, Droplets, Thermometer, History, TrendingUp, AlertTriangle, Users, Plus, Search, LogOut, Bot, LayoutDashboard, RefreshCcw } from 'lucide-react';
 import { 
   db, auth, loginWithGoogle, handleFirestoreError, OperationType, 
-  collection, doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, query, orderBy, limit 
+  collection, doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, query, orderBy, limit,
+  testConnection
 } from './firebase';
 import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
 
@@ -80,6 +81,8 @@ const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [activeUsers, setActiveUsers] = useState<User[]>([]);
   const [isCheckingSession, setIsCheckingSession] = useState(true);
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
 
   // Estados de Inventario
   const [products, setProducts] = useState<Product[]>([]);
@@ -108,6 +111,7 @@ const App: React.FC = () => {
 
   // WebSocket Connection (Solo para presencia)
   useEffect(() => {
+    testConnection();
     const socket = io();
     socketRef.current = socket;
 
@@ -178,14 +182,28 @@ const App: React.FC = () => {
       setIsCheckingSession(false);
     });
 
-    return () => unsubscribe();
-  }, []);
+    // Timeout to prevent stuck loading screen
+    const timeout = setTimeout(() => {
+      if (isCheckingSession) {
+        console.warn("Session check timed out, allowing manual login.");
+        setIsCheckingSession(false);
+      }
+    }, 5000);
+
+    return () => {
+      unsubscribe();
+      clearTimeout(timeout);
+    };
+  }, [isCheckingSession]);
 
   const handleGoogleLogin = async () => {
+    setLoginError(null);
+    setIsLoggingIn(true);
     try {
       await loginWithGoogle();
-    } catch (error) {
-      alert("Error al iniciar sesión con Google. Por favor intenta de nuevo.");
+    } catch (error: any) {
+      setLoginError(error.message || "Error desconocido al iniciar sesión.");
+      setIsLoggingIn(false);
     }
   };
 
@@ -409,12 +427,25 @@ const App: React.FC = () => {
               <h2 className="text-2xl font-black text-slate-900 uppercase italic">Iniciar Sesión</h2>
             </div>
             
+            {loginError && (
+              <div className="w-full p-4 bg-red-50 border border-red-200 rounded-2xl">
+                <p className="text-red-600 text-[10px] font-bold leading-relaxed text-center uppercase tracking-wider">
+                  {loginError}
+                </p>
+              </div>
+            )}
+
             <button 
               onClick={handleGoogleLogin}
-              className="w-full bg-slate-900 text-white font-black py-5 rounded-2xl hover:bg-slate-800 transition-all uppercase tracking-widest text-sm shadow-xl shadow-slate-900/20 active:scale-[0.98] flex items-center justify-center gap-4"
+              disabled={isLoggingIn}
+              className={`w-full ${isLoggingIn ? 'bg-slate-700' : 'bg-slate-900 hover:bg-slate-800'} text-white font-black py-5 rounded-2xl transition-all uppercase tracking-widest text-sm shadow-xl shadow-slate-900/20 active:scale-[0.98] flex items-center justify-center gap-4`}
             >
-              <i className="fa-brands fa-google text-xl"></i>
-              Continuar con Google
+              {isLoggingIn ? (
+                <div className="w-4 h-4 border-2 border-slate-400 border-t-transparent rounded-full animate-spin"></div>
+              ) : (
+                <i className="fa-brands fa-google text-xl"></i>
+              )}
+              {isLoggingIn ? 'Procesando...' : 'Continuar con Google'}
             </button>
 
             <p className="text-[10px] text-slate-400 text-center font-bold uppercase tracking-widest leading-relaxed">

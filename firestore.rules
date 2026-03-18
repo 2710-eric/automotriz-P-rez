@@ -99,5 +99,10 @@ service cloud.firestore {
       allow create: if isAuthenticated() && (request.auth.uid == userId && request.resource.data.role == 'user') || isAdmin();
       allow update: if isAuthenticated() && (request.auth.uid == userId && request.resource.data.role == resource.data.role) || isAdmin();
     }
+
+    // Test Connection Rule
+    match /test/connection {
+      allow read: if true;
+    }
   }
 }
