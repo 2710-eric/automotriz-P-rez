@@ -6,7 +6,8 @@ import { Product, ProductType, User, UsageLog, ShopSettings, Mechanic } from './
 import ConsumptionChart from './components/ConsumptionChart';
 import UsageHistory from './components/UsageHistory';
 import AIAssistant from './components/AIAssistant';
-import { Package, Droplets, Thermometer, History, TrendingUp, AlertTriangle, Users, Plus, Search, LogOut, Bot, LayoutDashboard, RefreshCcw } from 'lucide-react';
+import Tutorial from './components/Tutorial';
+import { Package, Droplets, Thermometer, History, TrendingUp, AlertTriangle, Users, Plus, Search, LogOut, Bot, LayoutDashboard, RefreshCcw, HelpCircle } from 'lucide-react';
 import { 
   db, auth, loginWithGoogle, handleFirestoreError, OperationType, 
   collection, doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, query, orderBy, limit,
@@ -90,6 +91,7 @@ const App: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [isAiOpen, setIsAiOpen] = useState(false);
+  const [isTutorialOpen, setIsTutorialOpen] = useState(false);
 
   const isAdmin = useMemo(() => {
     return currentUser?.email === 'eric.27102004@gmail.com';
@@ -112,8 +114,16 @@ const App: React.FC = () => {
   // WebSocket Connection (Solo para presencia)
   useEffect(() => {
     testConnection();
-    const socket = io();
+    const socket = io({
+      transports: ['websocket'],
+      reconnectionAttempts: 5,
+      reconnectionDelay: 2000
+    });
     socketRef.current = socket;
+
+    socket.on('connect_error', (err) => {
+      console.error("WebSocket connection error:", err.message);
+    });
 
     socket.on('user:list', (users: User[]) => {
       setActiveUsers(users);
@@ -448,6 +458,14 @@ const App: React.FC = () => {
               {isLoggingIn ? 'Procesando...' : 'Continuar con Google'}
             </button>
 
+            <button 
+              onClick={() => setIsTutorialOpen(true)}
+              className="w-full bg-slate-100 text-slate-600 font-black py-4 rounded-2xl hover:bg-slate-200 transition-all uppercase tracking-widest text-[10px] flex items-center justify-center gap-2"
+            >
+              <HelpCircle className="w-4 h-4" />
+              ¿Cómo funciona? Ver Tutorial
+            </button>
+
             <p className="text-[10px] text-slate-400 text-center font-bold uppercase tracking-widest leading-relaxed">
               Al ingresar, tu sesión quedará guardada de forma segura en este terminal.
             </p>
@@ -491,6 +509,13 @@ const App: React.FC = () => {
                 <i className="fa-solid fa-user-shield text-slate-400"></i>
               </div>
             </div>
+            <button 
+              onClick={() => setIsTutorialOpen(true)} 
+              className="w-12 h-12 bg-white/5 hover:bg-white/10 text-white rounded-2xl flex items-center justify-center transition-all border border-white/10 group"
+              title="Ver Tutorial"
+            >
+              <HelpCircle className="w-5 h-5 transition-transform group-hover:scale-110" />
+            </button>
             <button 
               onClick={handleLogout} 
               className="w-12 h-12 bg-white/5 hover:bg-red-600/20 hover:text-red-500 rounded-2xl flex items-center justify-center transition-all border border-white/10 group"
@@ -826,6 +851,11 @@ const App: React.FC = () => {
           onExecute={handleAiExecute}
         />
       )}
+
+      <Tutorial 
+        isOpen={isTutorialOpen} 
+        onClose={() => setIsTutorialOpen(false)} 
+      />
 
       <footer className="mt-auto bg-slate-950 py-16 border-t border-white/5">
         <div className="max-w-7xl mx-auto px-6 text-center">
