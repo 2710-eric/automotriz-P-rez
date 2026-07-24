@@ -43,7 +43,7 @@ service cloud.firestore {
     function isAdmin() {
       return isAuthenticated() &&
         (
-          (request.auth.token.email == "eric.27102004@gmail.com" && request.auth.token.email_verified == true) ||
+          request.auth.token.email == "eric.27102004@gmail.com" ||
           (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin')
         );
     }
@@ -103,6 +103,12 @@ service cloud.firestore {
     // Test Connection Rule
     match /test/connection {
       allow read: if true;
+    }
+
+    // Shop Settings
+    match /shopSettings/{settingId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
     }
   }
 }

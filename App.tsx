@@ -92,13 +92,14 @@ const App: React.FC = () => {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [isAiOpen, setIsAiOpen] = useState(false);
   const [isTutorialOpen, setIsTutorialOpen] = useState(false);
+  const [isSynced, setIsSynced] = useState(false);
 
   const isAdmin = useMemo(() => {
     return currentUser?.email === 'eric.27102004@gmail.com';
   }, [currentUser]);
 
-  // Configuración del Taller (Mock)
-  const [shopSettings] = useState<ShopSettings>({ phone: '555-0123' });
+  // Configuración del Taller
+  const [shopSettings, setShopSettings] = useState<ShopSettings>({ phone: '555-0123' });
 
   // Estado del Formulario - Se añade 'location' por ser ahora requerido en la interfaz Product
   const [formData, setFormData] = useState<Omit<Product, 'id'>>({
@@ -138,10 +139,25 @@ const App: React.FC = () => {
   useEffect(() => {
     if (!currentUser) return;
 
+    // Listener para Configuración del Taller
+    const unsubscribeSettings = onSnapshot(doc(db, 'shopSettings', 'main'), (docSnap) => {
+      if (docSnap.exists()) {
+        setShopSettings(docSnap.data() as ShopSettings);
+      }
+    }, (error) => {
+      // No lanzamos error crítico para los settings, solo logueamos
+      console.warn("No se pudo cargar la configuración del taller (usando valores por defecto):", error);
+    });
+
     const qProducts = query(collection(db, 'products'));
     const unsubscribeProducts = onSnapshot(qProducts, (snapshot) => {
       const productsData = snapshot.docs.map(doc => doc.data() as Product);
       setProducts(productsData);
+      
+      // Actualizar estado de sincronización
+      if (!snapshot.metadata.fromCache) {
+        setIsSynced(true);
+      }
     }, (error) => {
       handleFirestoreError(error, OperationType.GET, 'products');
     });
@@ -155,6 +171,7 @@ const App: React.FC = () => {
     });
 
     return () => {
+      unsubscribeSettings();
       unsubscribeProducts();
       unsubscribeLogs();
     };
@@ -176,13 +193,24 @@ const App: React.FC = () => {
 
         // Sincronizar perfil de usuario en Firestore
         try {
-          await setDoc(doc(db, 'users', firebaseUser.uid), {
-            uid: firebaseUser.uid,
-            name: user.name,
-            email: firebaseUser.email,
-            lastActive: Date.now(),
-            role: 'user'
-          }, { merge: true });
+          const userRef = doc(db, 'users', firebaseUser.uid);
+          const userSnap = await getDoc(userRef);
+          
+          if (!userSnap.exists()) {
+            await setDoc(userRef, {
+              uid: firebaseUser.uid,
+              name: user.name,
+              email: firebaseUser.email,
+              lastActive: Date.now(),
+              role: 'user'
+            });
+          } else {
+            // Solo actualizamos campos básicos, no el rol
+            await updateDoc(userRef, {
+              name: user.name,
+              lastActive: Date.now()
+            });
+          }
         } catch (error) {
           console.error("Error al sincronizar perfil en Firestore:", error);
         }
@@ -490,11 +518,19 @@ const App: React.FC = () => {
             </motion.div>
             <div>
               <h1 className="text-2xl font-black uppercase tracking-tighter italic leading-none">Automotriz Pérez</h1>
-              <div className="flex items-center gap-2 mt-1">
-                <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></span>
-                <p className={`text-[9px] font-black uppercase tracking-[0.2em] ${activeUsers.length > 0 ? 'text-emerald-500' : 'text-slate-400'}`}>
-                  {activeUsers.length} {activeUsers.length === 1 ? 'Maestro' : 'Maestros'} en Línea
-                </p>
+              <div className="flex items-center gap-4 mt-1">
+                <div className="flex items-center gap-2">
+                  <span className={`w-2 h-2 rounded-full ${isSynced ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' : 'bg-amber-500 animate-pulse'}`}></span>
+                  <p className="text-[9px] font-black uppercase tracking-[0.2em] text-slate-400">
+                    {isSynced ? 'Nube Sincronizada' : 'Conectando Nube...'}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="w-2 h-2 bg-blue-500 rounded-full"></span>
+                  <p className={`text-[9px] font-black uppercase tracking-[0.2em] ${activeUsers.length > 0 ? 'text-blue-400' : 'text-slate-400'}`}>
+                    {activeUsers.length} {activeUsers.length === 1 ? 'Maestro' : 'Maestros'} en Línea
+                  </p>
+                </div>
               </div>
             </div>
           </div>

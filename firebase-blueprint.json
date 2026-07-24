@@ -41,6 +41,16 @@
     "usageLogs": {
       "schema": "UsageLog",
       "description": "Activity logs"
+    },
+    "shopSettings": {
+      "schema": {
+        "type": "object",
+        "properties": {
+          "phone": { "type": "string" },
+          "name": { "type": "string" }
+        }
+      },
+      "description": "Global shop configuration"
     }
   }
 }
