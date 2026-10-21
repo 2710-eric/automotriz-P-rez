@@ -44,9 +44,14 @@ interface TutorialProps {
 const Tutorial: React.FC<TutorialProps> = ({ isOpen, onClose }) => {
   const [currentStep, setCurrentStep] = React.useState(0);
 
+  const handleClose = () => {
+    setCurrentStep(0);
+    onClose();
+  };
+
   const next = () => {
     if (currentStep < steps.length - 1) setCurrentStep(s => s + 1);
-    else onClose();
+    else handleClose();
   };
 
   const prev = () => {
@@ -61,7 +66,7 @@ const Tutorial: React.FC<TutorialProps> = ({ isOpen, onClose }) => {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            onClick={onClose}
+            onClick={handleClose}
             className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm"
           />
           
@@ -79,7 +84,7 @@ const Tutorial: React.FC<TutorialProps> = ({ isOpen, onClose }) => {
                 </div>
                 <h2 className="text-xl font-black text-slate-900 uppercase italic tracking-tight">Guía de Inicio</h2>
               </div>
-              <button onClick={onClose} className="p-2 hover:bg-slate-100 rounded-xl transition-colors">
+              <button onClick={handleClose} className="p-2 hover:bg-slate-100 rounded-xl transition-colors">
                 <X className="w-6 h-6 text-slate-400" />
               </button>
             </div>

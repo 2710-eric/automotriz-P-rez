@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, setPersistence, browserLocalPersistence, User as FirebaseUser } from 'firebase/auth';
-import { getFirestore, collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, onSnapshot, query, orderBy, limit, getDocFromServer, enableIndexedDbPersistence } from 'firebase/firestore';
+import { getFirestore, collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, onSnapshot, query, orderBy, limit, getDocFromServer, enableIndexedDbPersistence, writeBatch } from 'firebase/firestore';
 
 // Import the Firebase configuration
 import firebaseConfig from './firebase-applet-config.json';
@@ -115,4 +115,4 @@ export const loginWithGoogle = async () => {
 };
 
 // Export Firestore functions for convenience
-export { collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, onSnapshot, query, orderBy, limit };
+export { collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, onSnapshot, query, orderBy, limit, writeBatch };

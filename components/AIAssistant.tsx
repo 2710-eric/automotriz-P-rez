@@ -1,7 +1,23 @@
-
 import React, { useState, useRef, useEffect } from 'react';
-import { GoogleGenAI, Type, Modality, LiveServerMessage } from "@google/genai";
-import { Product, ShopSettings, Mechanic } from '../types';
+import { Product, ShopSettings, Mechanic, ProductType } from '../types';
+import { Bot, Send, Mic, MicOff, Volume2, VolumeX, Sparkles, AlertCircle, CheckCircle, Trash2, Edit3, PlusCircle, Zap, RotateCcw } from 'lucide-react';
+
+interface AIAction {
+  type: 'ADD_INVENTORY' | 'UPDATE_INVENTORY' | 'DELETE_INVENTORY';
+  targetId?: string;
+  data?: Partial<Product>;
+  message: string;
+}
+
+interface ChatMessage {
+  id: string;
+  text: string;
+  isUser: boolean;
+  timestamp: number;
+  actions?: AIAction[];
+  latencyMs?: number;
+  isError?: boolean;
+}
 
 interface AIAssistantProps {
   isOpen: boolean;
@@ -9,298 +25,496 @@ interface AIAssistantProps {
   products: Product[];
   shopSettings: ShopSettings;
   mechanic: Mechanic;
-  onExecute: (action: any) => void;
+  onExecute: (actions: AIAction[]) => Promise<void> | void;
 }
 
-// Audio Helpers
-function decode(base64: string) {
-  const b = atob(base64);
-  const bytes = new Uint8Array(b.length);
-  for (let i = 0; i < b.length; i++) bytes[i] = b.charCodeAt(i);
-  return bytes;
-}
-
-function encode(bytes: Uint8Array) {
-  let bin = '';
-  for (let i = 0; i < bytes.byteLength; i++) bin += String.fromCharCode(bytes[i]);
-  return btoa(bin);
-}
-
-async function decodeAudioData(data: Uint8Array, ctx: AudioContext, sr: number, ch: number): Promise<AudioBuffer> {
-  const d16 = new Int16Array(data.buffer);
-  const fc = d16.length / ch;
-  const buf = ctx.createBuffer(ch, fc, sr);
-  for (let c = 0; c < ch; c++) {
-    const cd = buf.getChannelData(c);
-    for (let i = 0; i < fc; i++) cd[i] = d16[i * ch + c] / 32768.0;
-  }
-  return buf;
-}
-
-const AIAssistant: React.FC<AIAssistantProps> = ({ isOpen, onClose, products, shopSettings, mechanic, onExecute }) => {
+const AIAssistant: React.FC<AIAssistantProps> = ({
+  isOpen,
+  onClose,
+  products,
+  shopSettings,
+  mechanic,
+  onExecute,
+}) => {
   const [prompt, setPrompt] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [isVoiceActive, setIsVoiceActive] = useState(false);
-  const [chatHistory, setChatHistory] = useState<{text: string, isUser: boolean}[]>([]);
-  
-  const audioContextsRef = useRef<{ input: AudioContext; output: AudioContext } | null>(null);
-  const nextStartTimeRef = useRef<number>(0);
-  const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
-  const sessionRef = useRef<any>(null);
+  const [isListening, setIsListening] = useState(false);
+  const [autoSpeak, setAutoSpeak] = useState(false);
+  const [isPlayingAudio, setIsPlayingAudio] = useState(false);
+  const [chatHistory, setChatHistory] = useState<ChatMessage[]>([
+    {
+      id: 'welcome',
+      text: `¡Hola Maestro ${mechanic.name}! Soy tu Copiloto Inteligente de Automotriz Pérez.\n\nEstoy optimizado con respuesta ultra rápida. Puedo responder dudas técnicas de aceites, refrigerantes y motores, o actualizar el inventario al instante. ¿Qué necesitas hoy?`,
+      isUser: false,
+      timestamp: Date.now(),
+    },
+  ]);
 
-  const addChat = (text: string, isUser: boolean) => {
-    setChatHistory(prev => [...prev.slice(-10), { text, isUser }]);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const recognitionRef = useRef<any>(null);
+  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  // Auto-scroll al final del chat
+  useEffect(() => {
+    if (isOpen) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [chatHistory, isOpen, isLoading]);
+
+  // Configuración de reconocimiento de voz (Web Speech API)
+  useEffect(() => {
+    const SpeechRecognition =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+
+    if (SpeechRecognition) {
+      const recognition = new SpeechRecognition();
+      recognition.continuous = false;
+      recognition.interimResults = true;
+      recognition.lang = 'es-ES';
+
+      recognition.onstart = () => {
+        setIsListening(true);
+      };
+
+      recognition.onresult = (event: any) => {
+        let transcript = '';
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          transcript += event.results[i][0].transcript;
+        }
+        setPrompt(transcript);
+      };
+
+      recognition.onerror = (event: any) => {
+        console.warn('Speech recognition error:', event.error);
+        setIsListening(false);
+      };
+
+      recognition.onend = () => {
+        setIsListening(false);
+      };
+
+      recognitionRef.current = recognition;
+    }
+
+    return () => {
+      if (recognitionRef.current) {
+        recognitionRef.current.abort();
+      }
+      stopAudioPlayback();
+    };
+  }, []);
+
+  const toggleListening = () => {
+    if (!recognitionRef.current) {
+      alert('Tu navegador no soporta reconocimiento de voz nativo. Por favor escribe tu consulta.');
+      return;
+    }
+
+    if (isListening) {
+      recognitionRef.current.stop();
+      setIsListening(false);
+    } else {
+      stopAudioPlayback();
+      try {
+        recognitionRef.current.start();
+      } catch (err) {
+        console.warn('Recognition start error:', err);
+      }
+    }
   };
 
-  const handleCommand = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!prompt.trim() || isLoading) return;
+  const stopAudioPlayback = () => {
+    if (currentAudioRef.current) {
+      currentAudioRef.current.pause();
+      currentAudioRef.current = null;
+    }
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
+    setIsPlayingAudio(false);
+  };
 
-    const userText = prompt;
-    setPrompt('');
-    addChat(userText, true);
-    setIsLoading(true);
+  // Síntesis de voz instantánea mediante Web Speech API (0ms latencia) con fallback
+  const speakText = async (text: string) => {
+    stopAudioPlayback();
+    setIsPlayingAudio(true);
+
+    const cleanText = text.replace(/[*#_`[\]]/g, ' ').trim();
+
+    if ('speechSynthesis' in window) {
+      const utterance = new SpeechSynthesisUtterance(cleanText);
+      utterance.lang = 'es-ES';
+      utterance.rate = 1.08;
+      utterance.onend = () => setIsPlayingAudio(false);
+      utterance.onerror = () => setIsPlayingAudio(false);
+      window.speechSynthesis.speak(utterance);
+      return;
+    }
 
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: `Maestro ${mechanic.name} dice: "${userText}". 
-        Contexto de Inventario: ${JSON.stringify(products)}. 
-        Instrucciones: 
-        1. Interpreta nomenclaturas como "10W-40" como parte de la marca/producto. 
-        2. Siempre usa ADD_INVENTORY para registrar nuevos ingresos de aceites o materiales. NO los sumes a registros existentes; crea uno nuevo.
-        3. Si el maestro menciona varios productos (ej: "Agrega 5 de Mobil y 2 de Castrol"), genera una lista de acciones separadas.
-        4. Solo usa UPDATE_INVENTORY si el maestro pide explícitamente corregir o modificar un registro específico.
-        5. Si pide quitar/usar uno, resta 1 a la cantidad actual y usa UPDATE_INVENTORY.
-        Retorna JSON con un objeto que contenga: actions (lista de objetos con type, data, targetId, message), finalMessage (resumen para el maestro).`,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              actions: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    type: { type: Type.STRING },
-                    data: { type: Type.OBJECT },
-                    targetId: { type: Type.STRING },
-                    message: { type: Type.STRING }
-                  },
-                  required: ["type", "message"]
-                }
-              },
-              finalMessage: { type: Type.STRING }
-            },
-            required: ["actions", "finalMessage"]
-          }
-        },
+      const res = await fetch('/api/ai/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: cleanText }),
       });
 
-      const result = JSON.parse(response.text || '{}');
-      if (result.actions) onExecute(result.actions);
-      addChat(result.finalMessage, false);
-    } catch (error) {
-      addChat("Maestro, hubo un error técnico con la IA. Intente de nuevo.", false);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.audioBase64) {
+          const audio = new Audio(`data:audio/wav;base64,${data.audioBase64}`);
+          currentAudioRef.current = audio;
+          audio.onended = () => setIsPlayingAudio(false);
+          audio.onerror = () => setIsPlayingAudio(false);
+          await audio.play();
+          return;
+        }
+      }
+    } catch (e) {
+      console.warn('Fallo TTS del servidor:', e);
+    }
+    setIsPlayingAudio(false);
+  };
+
+  const sendMessage = async (textToSend?: string) => {
+    const text = (textToSend || prompt).trim();
+    if (!text || isLoading) return;
+
+    if (isListening && recognitionRef.current) {
+      recognitionRef.current.stop();
+      setIsListening(false);
+    }
+
+    setPrompt('');
+    const userMsg: ChatMessage = {
+      id: crypto.randomUUID(),
+      text,
+      isUser: true,
+      timestamp: Date.now(),
+    };
+
+    setChatHistory((prev) => [...prev, userMsg]);
+    setIsLoading(true);
+    const startTime = Date.now();
+
+    try {
+      const response = await fetch('/api/ai/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          message: text,
+          products,
+          mechanic,
+        }),
+      });
+
+      const latencyMs = Date.now() - startTime;
+
+      if (!response.ok) {
+        throw new Error(`Error en servidor: ${response.status}`);
+      }
+
+      const data = await response.json();
+      const actions: AIAction[] = data.actions || [];
+
+      // Ejecutar acciones en Firestore si hay alguna
+      if (actions.length > 0) {
+        await onExecute(actions);
+      }
+
+      const aiMsg: ChatMessage = {
+        id: crypto.randomUUID(),
+        text: data.reply || 'He procesado tu instrucción correctamente.',
+        isUser: false,
+        timestamp: Date.now(),
+        actions,
+        latencyMs,
+      };
+
+      setChatHistory((prev) => [...prev, aiMsg]);
+
+      if (autoSpeak && data.reply) {
+        speakText(data.reply);
+      }
+    } catch (err: any) {
+      console.error('Error al consultar IA:', err);
+      const latencyMs = Date.now() - startTime;
+      const errorMsg: ChatMessage = {
+        id: crypto.randomUUID(),
+        text: 'Maestro, hubo un retraso o inconveniente de conexión. Por favor reintenta tu consulta.',
+        isUser: false,
+        timestamp: Date.now(),
+        latencyMs,
+        isError: true,
+      };
+      setChatHistory((prev) => [...prev, errorMsg]);
     } finally {
       setIsLoading(false);
     }
   };
 
-  const toggleVoice = async () => {
-    if (isVoiceActive) { stopVoiceSession(); return; }
-    startVoiceSession();
+  const clearChat = () => {
+    stopAudioPlayback();
+    setChatHistory([
+      {
+        id: 'welcome',
+        text: `¡Listo Maestro ${mechanic.name}! Historial reiniciado. ¿En qué te ayudo con los insumos o dudas mecánicas?`,
+        isUser: false,
+        timestamp: Date.now(),
+      },
+    ]);
   };
 
-  const startVoiceSession = async () => {
-    setIsVoiceActive(true);
-    addChat(`Escuchando al Maestro ${mechanic.name}...`, false);
-    try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const inputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
-      const outputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
-      audioContextsRef.current = { input: inputCtx, output: outputCtx };
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-
-      const sessionPromise = ai.live.connect({
-        model: 'gemini-2.5-flash-native-audio-preview-12-2025',
-        callbacks: {
-          onopen: () => {
-            const source = inputCtx.createMediaStreamSource(stream);
-            const scriptProcessor = inputCtx.createScriptProcessor(4096, 1, 1);
-            scriptProcessor.onaudioprocess = (e) => {
-              const inputData = e.inputBuffer.getChannelData(0);
-              const int16 = new Int16Array(inputData.length);
-              for (let i = 0; i < inputData.length; i++) int16[i] = inputData[i] * 32768;
-              const pcmBlob = { data: encode(new Uint8Array(int16.buffer)), mimeType: 'audio/pcm;rate=16000' };
-              sessionPromise.then(s => s.sendRealtimeInput({ media: pcmBlob }));
-            };
-            source.connect(scriptProcessor);
-            scriptProcessor.connect(inputCtx.destination);
-          },
-          onmessage: async (m: LiveServerMessage) => {
-            if (m.toolCall) {
-              for (const fc of m.toolCall.functionCalls) {
-                if (fc.name === 'executeAction') {
-                  onExecute(fc.args);
-                  sessionPromise.then(s => s.sendToolResponse({
-                    functionResponses: { id: fc.id, name: fc.name, response: { result: "Acción confirmada en la terminal." } }
-                  }));
-                  addChat((fc.args as any).message, false);
-                }
-              }
-            }
-            const audioData = m.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
-            if (audioData) {
-              nextStartTimeRef.current = Math.max(nextStartTimeRef.current, outputCtx.currentTime);
-              const buf = await decodeAudioData(decode(audioData), outputCtx, 24000, 1);
-              const s = outputCtx.createBufferSource();
-              s.buffer = buf;
-              s.connect(outputCtx.destination);
-              s.start(nextStartTimeRef.current);
-              nextStartTimeRef.current += buf.duration;
-              sourcesRef.current.add(s);
-              s.onended = () => sourcesRef.current.delete(s);
-            }
-          },
-          onclose: () => stopVoiceSession()
-        },
-        config: {
-          responseModalities: [Modality.AUDIO],
-          systemInstruction: `Eres la IA copiloto de Automotriz Pérez. Estás hablando con el Maestro ${mechanic.name}. Tu tono es profesional, breve y directo.
-          
-          CAPACIDADES Y REGLAS:
-          - Gestionas el inventario: ${JSON.stringify(products)}.
-          - SIEMPRE usa ADD_INVENTORY para nuevos ingresos de material. NO sumes cantidades a productos existentes; crea un registro nuevo para cada ingreso.
-          - Si el maestro menciona varios productos a la vez, llama a executeAction por cada uno de ellos por separado.
-          - Solo usa UPDATE_INVENTORY si el maestro pide explícitamente modificar un dato de un registro existente.
-          - Si el producto es nuevo o un reabastecimiento, usa ADD_INVENTORY.
-          - Los campos son: type (ACEITE, REFRIGERANTE, DESENGRASANTE), brand (incluye viscosidad ej: "10W-40"), liters, quantity, location.
-          - Si el maestro dice "quita uno de X", resta 1 a la cantidad y usa UPDATE_INVENTORY.
-          
-          REGLA DE ORO: Siempre usa executeAction. No confirmes cambios de palabra sin ejecutar la acción.`,
-          tools: [{
-            functionDeclarations: [{
-              name: 'executeAction',
-              description: 'Ejecuta modificaciones en el inventario o configuración del taller',
-              parameters: {
-                type: Type.OBJECT,
-                properties: {
-                  type: { type: Type.STRING, enum: ['UPDATE_INVENTORY', 'ADD_INVENTORY', 'DELETE_INVENTORY', 'UPDATE_SHOP_SETTINGS'] },
-                  data: { type: Type.OBJECT },
-                  targetId: { type: Type.STRING },
-                  message: { type: Type.STRING }
-                },
-                required: ['type', 'data', 'message']
-              }
-            }]
-          }],
-          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } }
-        }
-      });
-      sessionRef.current = await sessionPromise;
-    } catch (err) { stopVoiceSession(); }
-  };
-
-  const stopVoiceSession = () => {
-    setIsVoiceActive(false);
-    if (sessionRef.current) {
-      sessionRef.current.close();
-      sessionRef.current = null;
-    }
-    if (audioContextsRef.current) {
-      if (audioContextsRef.current.input.state !== 'closed') {
-        audioContextsRef.current.input.close().catch(console.error);
-      }
-      if (audioContextsRef.current.output.state !== 'closed') {
-        audioContextsRef.current.output.close().catch(console.error);
-      }
-      audioContextsRef.current = null;
-    }
-    sourcesRef.current.forEach(s => {
-      try { s.stop(); } catch (e) {}
-    });
-    sourcesRef.current.clear();
-  };
+  const quickPrompts = [
+    { label: '📦 Stock Bajo', text: '¿Qué insumos tienen stock bajo o están por agotarse?' },
+    { label: '🔧 5W-30 vs 10W-40', text: '¿Cuál es la diferencia entre aceite 5W-30 y 10W-40?' },
+    { label: '➕ Agregar 5 Mobil 5W-30', text: 'Agrega 5 unidades de Aceite Mobil 1 5W-30 en Bodega Principal' },
+    { label: '➖ Usé 1 Refrigerante', text: 'Acabo de usar 1 unidad de Refrigerante, descuéntalo del inventario' },
+    { label: '🧪 Anticongelante OAT', text: '¿Qué ventaja tiene el refrigerante orgánico OAT en motores modernos?' },
+  ];
 
   if (!isOpen) return null;
 
   return (
     <>
-      <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-50 transition-opacity" onClick={onClose} />
-      <div className="fixed top-0 right-0 h-full w-full max-w-sm bg-[#1E293B] shadow-[0_0_100px_rgba(0,0,0,0.8)] z-50 flex flex-col animate-slide-in-right border-l border-slate-700">
-        <div className="p-8 border-b border-slate-700 flex items-center justify-between bg-slate-900/40">
-          <div>
-            <h2 className="font-black text-slate-100 flex items-center gap-3 uppercase italic tracking-tighter">
-              <i className="fa-solid fa-microchip text-amber-500"></i>
-              Copiloto Mecánico
-            </h2>
-            <p className="text-[10px] text-slate-500 font-black uppercase tracking-[0.3em] mt-1">Sesión: Maestro {mechanic.name}</p>
+      {/* Backdrop */}
+      <div
+        className="fixed inset-0 bg-slate-950/70 backdrop-blur-sm z-50 transition-opacity"
+        onClick={onClose}
+      />
+
+      {/* Drawer */}
+      <div className="fixed top-0 right-0 h-full w-full max-w-md bg-slate-900 text-white shadow-2xl z-50 flex flex-col border-l border-slate-800">
+        {/* Header */}
+        <div className="p-5 border-b border-slate-800 flex items-center justify-between bg-slate-950/70">
+          <div className="flex items-center gap-3">
+            <div className="w-11 h-11 bg-red-600 rounded-2xl flex items-center justify-center shadow-lg shadow-red-600/30">
+              <Bot className="w-6 h-6 text-white" />
+            </div>
+            <div>
+              <h2 className="font-black text-white text-base uppercase tracking-tight italic flex items-center gap-2">
+                Copiloto IA
+                <span className="text-[10px] bg-emerald-500/20 text-emerald-400 font-bold px-2 py-0.5 rounded-full border border-emerald-500/30 flex items-center gap-1">
+                  <Zap className="w-2.5 h-2.5 fill-emerald-400" />
+                  Ultra Rápido (~1s)
+                </span>
+              </h2>
+              <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mt-0.5">
+                Maestro {mechanic.name} &bull; Gemini 3.1 Flash Lite
+              </p>
+            </div>
           </div>
-          <button onClick={onClose} className="w-10 h-10 flex items-center justify-center hover:bg-slate-800 rounded-xl text-slate-500 transition-colors">
-            <i className="fa-solid fa-xmark"></i>
-          </button>
+
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={clearChat}
+              className="w-8 h-8 rounded-xl flex items-center justify-center bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition-all text-xs border border-slate-700/60"
+              title="Reiniciar conversación"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={() => {
+                if (isPlayingAudio) {
+                  stopAudioPlayback();
+                } else {
+                  setAutoSpeak(!autoSpeak);
+                }
+              }}
+              className={`w-8 h-8 rounded-xl flex items-center justify-center transition-all text-xs border ${
+                autoSpeak || isPlayingAudio
+                  ? 'bg-amber-500/20 text-amber-400 border-amber-500/40'
+                  : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-white'
+              }`}
+              title={autoSpeak ? 'Lectura por voz activada' : 'Activar lectura por voz'}
+            >
+              {autoSpeak || isPlayingAudio ? (
+                <Volume2 className={`w-3.5 h-3.5 ${isPlayingAudio ? 'animate-pulse' : ''}`} />
+              ) : (
+                <VolumeX className="w-3.5 h-3.5" />
+              )}
+            </button>
+            <button
+              onClick={onClose}
+              className="w-8 h-8 flex items-center justify-center bg-slate-800 hover:bg-slate-700 rounded-xl text-slate-400 hover:text-white transition-colors border border-slate-700/60"
+            >
+              <i className="fa-solid fa-xmark text-sm"></i>
+            </button>
+          </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-8 space-y-6 custom-scrollbar">
-          <div className="bg-amber-500/10 border border-amber-500/20 p-5 rounded-2xl text-[11px] text-amber-500 font-bold uppercase tracking-tight leading-relaxed italic">
-            "Maestro {mechanic.name}, estoy listo para gestionar el almacén. Pídeme que actualice existencias, busque ubicaciones o registre nuevas piezas."
-          </div>
-          
-          {chatHistory.map((msg, i) => (
-            <div key={i} className={`flex ${msg.isUser ? 'justify-end' : 'justify-start'}`}>
-              <div className={`max-w-[90%] p-4 rounded-2xl text-xs font-bold ${
-                msg.isUser 
-                  ? 'bg-amber-500 text-slate-900 rounded-tr-none shadow-lg' 
-                  : 'bg-slate-900 text-slate-300 rounded-tl-none border border-slate-700 shadow-xl'
-              }`}>
-                {msg.text}
+        {/* Quick prompt suggestions */}
+        <div className="px-5 py-2.5 bg-slate-950/40 border-b border-slate-800/80 flex items-center gap-2 overflow-x-auto no-scrollbar">
+          <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+          {quickPrompts.map((q, idx) => (
+            <button
+              key={idx}
+              onClick={() => sendMessage(q.text)}
+              disabled={isLoading}
+              className="text-[10px] font-bold text-slate-300 bg-slate-800/90 hover:bg-slate-700 hover:text-white border border-slate-700/60 px-3 py-1.5 rounded-xl whitespace-nowrap transition-all active:scale-95 shrink-0 shadow-sm"
+            >
+              {q.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Chat History */}
+        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          {chatHistory.map((msg) => (
+            <div
+              key={msg.id}
+              className={`flex flex-col ${msg.isUser ? 'items-end' : 'items-start'}`}
+            >
+              <div
+                className={`max-w-[90%] p-4 rounded-2xl text-xs leading-relaxed font-medium shadow-md ${
+                  msg.isUser
+                    ? 'bg-red-600 text-white rounded-tr-none'
+                    : msg.isError
+                    ? 'bg-rose-950/80 text-rose-200 border border-rose-800/80 rounded-tl-none'
+                    : 'bg-slate-800 text-slate-200 border border-slate-700/80 rounded-tl-none'
+                }`}
+              >
+                <div className="whitespace-pre-line">{msg.text}</div>
+
+                {/* Badges de acciones ejecutadas */}
+                {msg.actions && msg.actions.length > 0 && (
+                  <div className="mt-3 pt-3 border-t border-slate-700/80 space-y-1.5">
+                    <p className="text-[9px] uppercase tracking-wider font-black text-amber-400 flex items-center gap-1.5">
+                      <CheckCircle className="w-3 h-3" /> Acciones Realizadas en Inventario:
+                    </p>
+                    {msg.actions.map((act, i) => (
+                      <div
+                        key={i}
+                        className="flex items-center gap-2 p-2 bg-slate-900/80 rounded-xl text-[10px] font-bold border border-slate-700/50"
+                      >
+                        {act.type === 'ADD_INVENTORY' && (
+                          <PlusCircle className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                        )}
+                        {act.type === 'UPDATE_INVENTORY' && (
+                          <Edit3 className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                        )}
+                        {act.type === 'DELETE_INVENTORY' && (
+                          <Trash2 className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                        )}
+                        <span className="text-slate-300 leading-tight">{act.message}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
+
+              {/* Pie de mensaje del asistente: latencia y controles */}
+              {!msg.isUser && (
+                <div className="flex items-center gap-3 mt-1 ml-2">
+                  {msg.latencyMs !== undefined && (
+                    <span className="text-[9px] font-bold text-emerald-400 flex items-center gap-1 bg-emerald-950/60 px-2 py-0.5 rounded-full border border-emerald-800/50">
+                      <Zap className="w-2.5 h-2.5 fill-emerald-400" />
+                      {(msg.latencyMs / 1000).toFixed(1)}s
+                    </span>
+                  )}
+                  <button
+                    onClick={() => speakText(msg.text)}
+                    className="text-[10px] text-slate-400 hover:text-white flex items-center gap-1 transition-colors"
+                    title="Escuchar mensaje con voz"
+                  >
+                    <Volume2 className="w-3 h-3" />
+                    <span>Escuchar</span>
+                  </button>
+                  {msg.isError && (
+                    <button
+                      onClick={() => {
+                        const lastUser = [...chatHistory].reverse().find(m => m.isUser);
+                        if (lastUser) sendMessage(lastUser.text);
+                      }}
+                      className="text-[10px] text-rose-400 hover:text-rose-300 flex items-center gap-1 transition-colors font-bold underline"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                      <span>Reintentar</span>
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           ))}
-          {isLoading && !isVoiceActive && <div className="text-[10px] font-black text-amber-500/50 animate-pulse italic uppercase tracking-widest px-2">● Sincronizando datos...</div>}
+
+          {isLoading && (
+            <div className="flex items-center gap-3 p-3.5 bg-slate-800/80 rounded-2xl border border-slate-700/60 w-fit shadow-md">
+              <div className="w-4 h-4 border-2 border-red-500 border-t-transparent rounded-full animate-spin"></div>
+              <span className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
+                <Zap className="w-3 h-3 text-amber-400 fill-amber-400 animate-pulse" />
+                El Copiloto está respondiendo al instante...
+              </span>
+            </div>
+          )}
+          <div ref={messagesEndRef} />
         </div>
 
-        <div className="p-8 border-t border-slate-800 bg-slate-900/40">
-          <div className="flex items-center gap-3">
-            <button 
-              onClick={toggleVoice}
-              className={`w-14 h-14 rounded-2xl flex items-center justify-center transition-all shadow-2xl ${
-                isVoiceActive ? 'bg-rose-600 text-white animate-pulse' : 'bg-slate-800 border border-slate-700 text-amber-500 hover:bg-slate-700'
+        {/* Input Bar */}
+        <div className="p-5 border-t border-slate-800 bg-slate-950/80">
+          {isListening && (
+            <div className="mb-2 p-2.5 bg-red-600/20 border border-red-500/40 rounded-xl flex items-center justify-between animate-pulse">
+              <div className="flex items-center gap-2 text-xs font-bold text-red-300">
+                <span className="w-2.5 h-2.5 bg-red-500 rounded-full animate-ping"></span>
+                Escuchando al Maestro... Habla ahora
+              </div>
+              <button
+                onClick={toggleListening}
+                className="text-[10px] uppercase font-black tracking-wider text-red-200 underline"
+              >
+                Detener
+              </button>
+            </div>
+          )}
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={toggleListening}
+              className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-all shadow-md shrink-0 ${
+                isListening
+                  ? 'bg-red-600 text-white animate-pulse shadow-red-600/40'
+                  : 'bg-slate-800 text-slate-300 hover:text-white border border-slate-700 hover:bg-slate-700'
               }`}
-              title={isVoiceActive ? "Cerrar micrófono" : "Hablar con Copiloto"}
+              title={isListening ? 'Detener micrófono' : 'Hablar por micrófono'}
             >
-              <i className={`fa-solid ${isVoiceActive ? 'fa-stop' : 'fa-microphone-lines'} text-2xl`}></i>
+              {isListening ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
             </button>
-            <form onSubmit={handleCommand} className="flex-1 relative">
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                sendMessage();
+              }}
+              className="flex-1 relative flex items-center"
+            >
               <input
                 type="text"
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
-                placeholder={isVoiceActive ? "IA escuchando..." : "Escribe comando técnico..."}
-                className="w-full pl-6 pr-12 py-4 bg-slate-800 border border-slate-700 rounded-2xl outline-none focus:ring-2 focus:ring-amber-500 text-white font-bold text-xs placeholder:text-slate-600 shadow-inner"
-                disabled={isVoiceActive}
+                placeholder={
+                  isListening
+                    ? 'Escuchando tu voz...'
+                    : 'Pregunta sobre lubricantes, agrega o cambia insumos...'
+                }
+                className="w-full pl-4 pr-12 py-3.5 bg-slate-800 border border-slate-700 rounded-2xl outline-none focus:border-red-500 text-white font-medium text-xs placeholder:text-slate-500 shadow-inner"
+                disabled={isLoading}
               />
-              <button type="submit" className="absolute right-4 top-1/2 -translate-y-1/2 text-amber-500 disabled:text-slate-700">
-                <i className="fa-solid fa-bolt"></i>
+              <button
+                type="submit"
+                disabled={!prompt.trim() || isLoading}
+                className="absolute right-2 text-white bg-red-600 hover:bg-red-700 disabled:bg-slate-700 disabled:text-slate-500 w-8 h-8 rounded-xl flex items-center justify-center transition-all shadow-md"
+              >
+                <Send className="w-3.5 h-3.5" />
               </button>
             </form>
           </div>
-          <div className="mt-4 flex justify-center">
-            <span className="text-[9px] font-black text-slate-600 uppercase tracking-[0.4em] italic">Sistema de Control Inteligente V3.0</span>
-          </div>
+
+          <p className="text-[9px] text-slate-500 text-center font-bold uppercase tracking-wider mt-3">
+            Motor Gemini &bull; Consulta dudas técnicas o modifica el inventario en tiempo real
+          </p>
         </div>
       </div>
-
-      <style>{`
-        @keyframes slide-in-right { from { transform: translateX(100%); } to { transform: translateX(0); } }
-        .animate-slide-in-right { animation: slide-in-right 0.4s cubic-bezier(0.1, 0.9, 0.2, 1); }
-        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
-        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: #334155; border-radius: 10px; }
-      `}</style>
     </>
   );
 };

@@ -7,13 +7,14 @@ import ConsumptionChart from './components/ConsumptionChart';
 import UsageHistory from './components/UsageHistory';
 import AIAssistant from './components/AIAssistant';
 import Tutorial from './components/Tutorial';
-import { Package, Droplets, Thermometer, History, TrendingUp, AlertTriangle, Users, Plus, Search, LogOut, Bot, LayoutDashboard, RefreshCcw, HelpCircle } from 'lucide-react';
+import { Package, Droplets, Thermometer, History, TrendingUp, AlertTriangle, Users, Plus, Search, LogOut, Bot, LayoutDashboard, RefreshCcw, HelpCircle, Trash2, AlertCircle, X } from 'lucide-react';
 import { 
   db, auth, loginWithGoogle, handleFirestoreError, OperationType, 
   collection, doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, query, orderBy, limit,
-  testConnection
+  writeBatch, testConnection
 } from './firebase';
 import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
+import firebaseConfig from './firebase-applet-config.json';
 
 // Error Boundary Component
 interface ErrorBoundaryProps {
@@ -94,8 +95,27 @@ const App: React.FC = () => {
   const [isTutorialOpen, setIsTutorialOpen] = useState(false);
   const [isSynced, setIsSynced] = useState(false);
 
+  // Estados de eliminación y modales de confirmación
+  const [isBulkDeleteModalOpen, setIsBulkDeleteModalOpen] = useState(false);
+  const [isDeletingBulk, setIsDeletingBulk] = useState(false);
+  const [productToDelete, setProductToDelete] = useState<Product | null>(null);
+  const [isDeletingSingle, setIsDeletingSingle] = useState(false);
+
+  // Verificación de primera visita para activar tutorial automáticamente
+  useEffect(() => {
+    try {
+      const hasSeen = localStorage.getItem('automotriz_tutorial_first_visit');
+      if (!hasSeen) {
+        setIsTutorialOpen(true);
+        localStorage.setItem('automotriz_tutorial_first_visit', 'true');
+      }
+    } catch (e) {
+      console.warn("Storage check skipped:", e);
+    }
+  }, []);
+
   const isAdmin = useMemo(() => {
-    return currentUser?.email === 'eric.27102004@gmail.com';
+    return currentUser?.email?.toLowerCase() === 'eric.27102004@gmail.com' || currentUser?.role === 'admin';
   }, [currentUser]);
 
   // Configuración del Taller
@@ -179,7 +199,21 @@ const App: React.FC = () => {
 
   // Firebase Auth Listener
   useEffect(() => {
+    let isMounted = true;
+    let authChecked = false;
+
+    // Timeout de seguridad solo si Firebase tarda más de lo habitual
+    const timeout = setTimeout(() => {
+      if (isMounted && !authChecked) {
+        setIsCheckingSession(false);
+      }
+    }, 2500);
+
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      authChecked = true;
+      clearTimeout(timeout);
+      if (!isMounted) return;
+
       if (firebaseUser) {
         const user: User = {
           id: firebaseUser.uid,
@@ -220,19 +254,12 @@ const App: React.FC = () => {
       setIsCheckingSession(false);
     });
 
-    // Timeout to prevent stuck loading screen
-    const timeout = setTimeout(() => {
-      if (isCheckingSession) {
-        console.warn("Session check timed out, allowing manual login.");
-        setIsCheckingSession(false);
-      }
-    }, 5000);
-
     return () => {
+      isMounted = false;
       unsubscribe();
       clearTimeout(timeout);
     };
-  }, [isCheckingSession]);
+  }, []);
 
   const handleGoogleLogin = async () => {
     setLoginError(null);
@@ -302,13 +329,49 @@ const App: React.FC = () => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const handleDelete = async (id: string) => {
-    if (confirm('¿Estás seguro de eliminar este producto?')) {
-      try {
-        await deleteDoc(doc(db, 'products', id));
-      } catch (error) {
-        handleFirestoreError(error, OperationType.DELETE, `products/${id}`);
+  // Iniciar eliminación de un producto individual abriendo modal
+  const handleInitiateDelete = (product: Product) => {
+    setProductToDelete(product);
+  };
+
+  // Confirmar eliminación individual en Firestore
+  const handleConfirmSingleDelete = async () => {
+    if (!productToDelete) return;
+    setIsDeletingSingle(true);
+    try {
+      await deleteDoc(doc(db, 'products', productToDelete.id));
+      setProductToDelete(null);
+    } catch (error) {
+      console.error("Error al eliminar producto:", error);
+      handleFirestoreError(error, OperationType.DELETE, `products/${productToDelete.id}`);
+    } finally {
+      setIsDeletingSingle(false);
+    }
+  };
+
+  // Confirmar vaciado total de inventario en Firestore con Batch
+  const handleConfirmBulkDelete = async () => {
+    if (products.length === 0) {
+      setIsBulkDeleteModalOpen(false);
+      return;
+    }
+    setIsDeletingBulk(true);
+    try {
+      const batchSize = 400;
+      for (let i = 0; i < products.length; i += batchSize) {
+        const batch = writeBatch(db);
+        const chunk = products.slice(i, i + batchSize);
+        chunk.forEach(p => {
+          batch.delete(doc(db, 'products', p.id));
+        });
+        await batch.commit();
       }
+      setIsBulkDeleteModalOpen(false);
+    } catch (error) {
+      console.error("Error al vaciar inventario:", error);
+      handleFirestoreError(error, OperationType.DELETE, 'products');
+    } finally {
+      setIsDeletingBulk(false);
     }
   };
 
@@ -340,49 +403,98 @@ const App: React.FC = () => {
     }
   };
 
+  // Función para normalizar categorías de producto
+  const normalizeProductType = (rawType?: string): ProductType => {
+    const lower = (rawType || '').toLowerCase();
+    if (lower.includes('refrig') || lower.includes('anticong')) return ProductType.REFRIGERANTE;
+    if (lower.includes('desengras')) return ProductType.DESENGRASANTE;
+    return ProductType.ACEITE;
+  };
+
   // Manejador de acciones de IA
   const handleAiExecute = async (actions: any | any[]) => {
     const actionList = Array.isArray(actions) ? actions : [actions];
-    console.log("IA Actions:", actionList);
+    console.log("IA Actions to execute:", actionList);
     
     for (const action of actionList) {
       try {
         switch (action.type) {
           case 'UPDATE_INVENTORY': {
-            const productRef = doc(db, 'products', action.targetId);
-            const productSnap = await getDoc(productRef);
-            if (productSnap.exists()) {
-              const p = productSnap.data() as Product;
-              const newData = { ...p, ...action.data, lastUpdated: Date.now() };
-              if ('quantity' in newData) newData.quantity = Number(newData.quantity) || 0;
-              
-              const diff = Math.abs((Number(action.data.quantity) || p.quantity) - p.quantity);
-              const isDecrement = action.data.quantity !== undefined && action.data.quantity < p.quantity;
-              
-              const newLog: UsageLog = {
-                id: crypto.randomUUID(),
-                usedBy: `IA (${currentUser?.name})`,
-                brand: newData.brand,
-                type: newData.type,
-                liters: newData.liters,
-                timestamp: Date.now(),
-                action: isDecrement ? 'CONSUMO' : 'EDICION',
-                quantity: diff || newData.quantity
-              };
-              
-              await setDoc(productRef, newData);
-              await setDoc(doc(db, 'usageLogs', newLog.id), newLog);
+            let targetId = action.targetId;
+            // Si no se proporcionó targetId, buscar por coincidencia en marca
+            if (!targetId && action.data?.brand) {
+              const matched = products.find(p => 
+                p.brand.toLowerCase().includes(action.data.brand.toLowerCase()) ||
+                action.data.brand.toLowerCase().includes(p.brand.toLowerCase())
+              );
+              if (matched) targetId = matched.id;
+            }
+
+            if (!targetId && products.length > 0) {
+              // Buscar primer producto que coincida con el tipo
+              const matchedType = products.find(p => p.type === normalizeProductType(action.data?.type));
+              if (matchedType) targetId = matchedType.id;
+            }
+
+            if (targetId) {
+              const productRef = doc(db, 'products', targetId);
+              const productSnap = await getDoc(productRef);
+              if (productSnap.exists()) {
+                const p = productSnap.data() as Product;
+                const updatePayload: any = { ...action.data };
+                if (updatePayload.type) {
+                  updatePayload.type = normalizeProductType(updatePayload.type);
+                }
+                if ('quantity' in updatePayload) {
+                  updatePayload.quantity = Math.max(0, Number(updatePayload.quantity) || 0);
+                }
+
+                const newData: Product = {
+                  ...p,
+                  ...updatePayload,
+                  lastUpdated: Date.now()
+                };
+                
+                const oldQty = Number(p.quantity) || 0;
+                const newQty = Number(newData.quantity) || 0;
+                const isDecrement = updatePayload.quantity !== undefined && newQty < oldQty;
+                const diff = Math.abs(newQty - oldQty);
+                
+                const newLog: UsageLog = {
+                  id: crypto.randomUUID(),
+                  usedBy: `IA (${currentUser?.name || 'Maestro'})`,
+                  brand: newData.brand,
+                  type: newData.type,
+                  liters: newData.liters,
+                  timestamp: Date.now(),
+                  action: isDecrement ? 'CONSUMO' : 'EDICION',
+                  quantity: diff > 0 ? diff : 1
+                };
+                
+                await setDoc(productRef, newData);
+                await setDoc(doc(db, 'usageLogs', newLog.id), newLog);
+              }
             }
             break;
           }
           case 'ADD_INVENTORY': {
             const newId = crypto.randomUUID();
-            const newProduct = { ...action.data, id: newId, lastUpdated: Date.now() };
-            if ('quantity' in newProduct) newProduct.quantity = Number(newProduct.quantity) || 0;
+            const raw = action.data || {};
+            const cleanType = normalizeProductType(raw.type);
+            const newProduct: Product = {
+              id: newId,
+              type: cleanType,
+              brand: (raw.brand || 'Insumo Taller').trim(),
+              liters: (raw.liters || '1L').trim(),
+              quantity: Math.max(0, Number(raw.quantity) || 1),
+              location: (raw.location || 'Principal').trim(),
+              notes: raw.notes || '',
+              lastUpdated: Date.now()
+            };
             
             const newLog: UsageLog = {
               id: crypto.randomUUID(),
-              usedBy: `IA (${currentUser?.name})`,
+              usedBy: `IA (${currentUser?.name || 'Maestro'})`,
               brand: newProduct.brand,
               type: newProduct.type,
               liters: newProduct.liters,
@@ -395,9 +507,35 @@ const App: React.FC = () => {
             await setDoc(doc(db, 'usageLogs', newLog.id), newLog);
             break;
           }
-          case 'DELETE_INVENTORY':
-            await deleteDoc(doc(db, 'products', action.targetId));
+          case 'DELETE_INVENTORY': {
+            let targetId = action.targetId;
+            if (!targetId && action.data?.brand) {
+              const matched = products.find(p => 
+                p.brand.toLowerCase().includes(action.data.brand.toLowerCase()) ||
+                action.data.brand.toLowerCase().includes(p.brand.toLowerCase())
+              );
+              if (matched) targetId = matched.id;
+            }
+
+            if (targetId) {
+              const existing = products.find(p => p.id === targetId);
+              await deleteDoc(doc(db, 'products', targetId));
+              if (existing) {
+                const delLog: UsageLog = {
+                  id: crypto.randomUUID(),
+                  usedBy: `IA (${currentUser?.name || 'Maestro'})`,
+                  brand: existing.brand,
+                  type: existing.type,
+                  liters: existing.liters,
+                  timestamp: Date.now(),
+                  action: 'CONSUMO',
+                  quantity: existing.quantity
+                };
+                await setDoc(doc(db, 'usageLogs', delLog.id), delLog);
+              }
+            }
             break;
+          }
         }
       } catch (error) {
         console.error("Error executing IA action:", error);
@@ -466,10 +604,26 @@ const App: React.FC = () => {
             </div>
             
             {loginError && (
-              <div className="w-full p-4 bg-red-50 border border-red-200 rounded-2xl">
-                <p className="text-red-600 text-[10px] font-bold leading-relaxed text-center uppercase tracking-wider">
+              <div className="w-full p-4 bg-red-50 border border-red-200 rounded-2xl space-y-2">
+                <p className="text-red-600 text-[11px] font-bold leading-relaxed text-center uppercase tracking-wider">
                   {loginError}
                 </p>
+                {loginError.includes('DOMINIO_NO_AUTORIZADO') && (
+                  <div className="pt-2 border-t border-red-200 text-[10px] text-slate-700 space-y-2">
+                    <p className="font-semibold text-center text-slate-800">Dominio actual detectado:</p>
+                    <code className="block p-2 bg-white rounded-lg border border-red-200 text-slate-900 font-mono text-center select-all break-all">
+                      {window.location.hostname}
+                    </code>
+                    <a
+                      href={`https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication/providers`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="block text-center text-red-600 underline font-black hover:text-red-700 pt-1"
+                    >
+                      Ir a Consola Firebase &rarr;
+                    </a>
+                  </div>
+                )}
               </div>
             )}
 
@@ -499,6 +653,12 @@ const App: React.FC = () => {
             </p>
           </div>
         </motion.div>
+
+        {/* Tutorial interactivo funcional antes de iniciar sesión */}
+        <Tutorial 
+          isOpen={isTutorialOpen} 
+          onClose={() => setIsTutorialOpen(false)} 
+        />
       </div>
     );
   }
@@ -762,15 +922,33 @@ const App: React.FC = () => {
                 </h2>
                 <p className="text-[9px] text-slate-400 font-black uppercase tracking-[0.2em] mt-0.5">Sincronización Activa</p>
               </div>
-              <div className="relative w-full md:w-64">
-                <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 w-3.5 h-3.5" />
-                <input 
-                  type="text" 
-                  placeholder="Filtrar..."
-                  className="w-full pl-11 pr-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl text-[10px] font-black uppercase italic outline-none focus:border-red-600 transition-all"
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                />
+              <div className="flex flex-wrap items-center justify-end gap-3 w-full md:w-auto">
+                <div className="relative w-full sm:w-64">
+                  <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 w-3.5 h-3.5" />
+                  <input 
+                    type="text" 
+                    placeholder="Filtrar..."
+                    className="w-full pl-11 pr-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl text-[10px] font-black uppercase italic outline-none focus:border-red-600 transition-all"
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                  />
+                </div>
+                {/* Botón pequeño para eliminar todo el inventario */}
+                {isAdmin && (
+                  <button
+                    onClick={() => setIsBulkDeleteModalOpen(true)}
+                    disabled={products.length === 0}
+                    className={`flex items-center gap-1.5 px-3.5 py-3 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all whitespace-nowrap shadow-sm active:scale-95 ${
+                      products.length === 0
+                        ? 'bg-slate-100 text-slate-400 cursor-not-allowed opacity-50'
+                        : 'bg-red-50 text-red-600 hover:bg-red-600 hover:text-white border border-red-200 hover:border-red-600'
+                    }`}
+                    title={products.length === 0 ? "El inventario ya está vacío" : "Eliminar todo el inventario con advertencia"}
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Vaciar Todo</span>
+                  </button>
+                )}
               </div>
             </div>
 
@@ -829,17 +1007,19 @@ const App: React.FC = () => {
                           </div>
                         </td>
                         <td className="px-8 py-4 text-right">
-                          <div className="flex justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <div className="flex justify-end items-center gap-2">
                             <button 
                               onClick={() => handleEdit(p)} 
-                              className="w-8 h-8 bg-blue-50 text-blue-600 rounded-lg flex items-center justify-center hover:bg-blue-600 hover:text-white transition-all shadow-sm"
+                              title="Editar producto"
+                              className="w-8 h-8 bg-blue-50 text-blue-600 rounded-lg flex items-center justify-center hover:bg-blue-600 hover:text-white transition-all shadow-sm active:scale-95"
                             >
                               <i className="fa-solid fa-pen-to-square text-[10px]"></i>
                             </button>
                             {isAdmin && (
                               <button 
-                                onClick={() => handleDelete(p.id)} 
-                                className="w-8 h-8 bg-red-50 text-red-600 rounded-lg flex items-center justify-center hover:bg-red-600 hover:text-white transition-all shadow-sm"
+                                onClick={() => handleInitiateDelete(p)} 
+                                title="Eliminar producto"
+                                className="w-8 h-8 bg-red-50 text-red-600 rounded-lg flex items-center justify-center hover:bg-red-600 hover:text-white transition-all shadow-sm active:scale-95"
                               >
                                 <i className="fa-solid fa-trash-can text-[10px]"></i>
                               </button>
@@ -892,6 +1072,186 @@ const App: React.FC = () => {
         isOpen={isTutorialOpen} 
         onClose={() => setIsTutorialOpen(false)} 
       />
+
+      {/* Modal de Advertencia Crítica: Vaciar Todo el Inventario */}
+      <AnimatePresence>
+        {isBulkDeleteModalOpen && (
+          <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 sm:p-6">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => !isDeletingBulk && setIsBulkDeleteModalOpen(false)}
+              className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 15 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 15 }}
+              className="relative w-full max-w-md bg-white rounded-3xl shadow-2xl overflow-hidden border border-red-200 z-10"
+            >
+              <div className="p-6 bg-red-50/70 border-b border-red-100 flex items-start gap-4">
+                <div className="w-12 h-12 rounded-2xl bg-red-600 text-white flex items-center justify-center shrink-0 shadow-lg shadow-red-600/30">
+                  <AlertTriangle className="w-6 h-6 animate-bounce" />
+                </div>
+                <div className="flex-1">
+                  <span className="text-[10px] font-black uppercase tracking-widest text-red-600">
+                    Advertencia Crítica
+                  </span>
+                  <h3 className="text-lg font-black text-slate-900 uppercase italic tracking-tight">
+                    ¿Vaciar todo el inventario?
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => !isDeletingBulk && setIsBulkDeleteModalOpen(false)}
+                  disabled={isDeletingBulk}
+                  className="text-slate-400 hover:text-slate-600 p-1 rounded-lg"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="p-6 space-y-4">
+                <p className="text-slate-600 text-sm leading-relaxed">
+                  Estás a punto de eliminar <strong className="text-red-600 font-black">{products.length} productos</strong> registrados en el taller.
+                </p>
+                <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl text-xs text-slate-700 space-y-1">
+                  <p className="font-bold text-slate-900 flex items-center gap-1.5">
+                    <AlertCircle className="w-4 h-4 text-red-600" /> Esta acción es irreversible
+                  </p>
+                  <p className="text-slate-500 text-[11px]">
+                    Todos los lubricantes, refrigerantes y registros de stock en el inventario real se borrarán permanentemente de la base de datos.
+                  </p>
+                </div>
+              </div>
+
+              <div className="p-6 bg-slate-50 border-t border-slate-100 flex items-center justify-end gap-3">
+                <button
+                  type="button"
+                  disabled={isDeletingBulk}
+                  onClick={() => setIsBulkDeleteModalOpen(false)}
+                  className="px-5 py-3 rounded-xl border border-slate-200 bg-white text-slate-700 font-bold text-xs uppercase tracking-wider hover:bg-slate-100 transition-all disabled:opacity-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  disabled={isDeletingBulk || products.length === 0}
+                  onClick={handleConfirmBulkDelete}
+                  className="px-6 py-3 rounded-xl bg-red-600 text-white font-black text-xs uppercase tracking-wider hover:bg-red-700 transition-all flex items-center gap-2 shadow-lg shadow-red-600/30 disabled:opacity-50"
+                >
+                  {isDeletingBulk ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      <span>Vaciando...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 className="w-4 h-4" />
+                      <span>Sí, Vaciar Todo</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Modal de Confirmación: Eliminar Producto Individual */}
+      <AnimatePresence>
+        {productToDelete && (
+          <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 sm:p-6">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => !isDeletingSingle && setProductToDelete(null)}
+              className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 15 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 15 }}
+              className="relative w-full max-w-md bg-white rounded-3xl shadow-2xl overflow-hidden border border-slate-200 z-10"
+            >
+              <div className="p-6 bg-slate-50 border-b border-slate-100 flex items-start gap-4">
+                <div className="w-12 h-12 rounded-2xl bg-red-100 text-red-600 flex items-center justify-center shrink-0">
+                  <Trash2 className="w-6 h-6" />
+                </div>
+                <div className="flex-1">
+                  <span className="text-[10px] font-black uppercase tracking-widest text-red-600">
+                    Confirmar Eliminación
+                  </span>
+                  <h3 className="text-lg font-black text-slate-900 uppercase italic tracking-tight">
+                    ¿Eliminar este producto?
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => !isDeletingSingle && setProductToDelete(null)}
+                  disabled={isDeletingSingle}
+                  className="text-slate-400 hover:text-slate-600 p-1 rounded-lg"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="p-6 space-y-4">
+                <div className="p-4 bg-slate-50 border border-slate-100 rounded-2xl space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                      {productToDelete.type}
+                    </span>
+                    <span className="px-2.5 py-1 bg-slate-200 text-slate-800 text-[10px] font-black rounded-lg">
+                      Stock: {productToDelete.quantity}
+                    </span>
+                  </div>
+                  <h4 className="text-base font-black text-slate-900 uppercase tracking-tight">
+                    {productToDelete.brand}
+                  </h4>
+                  <p className="text-xs text-slate-500 font-medium">
+                    Presentación: {productToDelete.liters} {productToDelete.location ? `· Ubicación: ${productToDelete.location}` : ''}
+                  </p>
+                </div>
+                <p className="text-slate-500 text-xs">
+                  Este insumo se quitará permanentemente del inventario real y de las estadísticas del taller.
+                </p>
+              </div>
+
+              <div className="p-6 bg-slate-50 border-t border-slate-100 flex items-center justify-end gap-3">
+                <button
+                  type="button"
+                  disabled={isDeletingSingle}
+                  onClick={() => setProductToDelete(null)}
+                  className="px-5 py-3 rounded-xl border border-slate-200 bg-white text-slate-700 font-bold text-xs uppercase tracking-wider hover:bg-slate-100 transition-all disabled:opacity-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  disabled={isDeletingSingle}
+                  onClick={handleConfirmSingleDelete}
+                  className="px-6 py-3 rounded-xl bg-red-600 text-white font-black text-xs uppercase tracking-wider hover:bg-red-700 transition-all flex items-center gap-2 shadow-lg shadow-red-600/30 disabled:opacity-50"
+                >
+                  {isDeletingSingle ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      <span>Eliminando...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 className="w-4 h-4" />
+                      <span>Sí, Eliminar</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       <footer className="mt-auto bg-slate-950 py-16 border-t border-white/5">
         <div className="max-w-7xl mx-auto px-6 text-center">
